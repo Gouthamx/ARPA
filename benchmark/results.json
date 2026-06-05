@@ -1,0 +1,75 @@
+[
+  {
+    "key": "easy2",
+    "level": "easy",
+    "score": 65,
+    "max_score": 65,
+    "elapsed_s": 83.32,
+    "extracted_name": "EMNIST",
+    "registry": "tfds/emnist",
+    "verified": false,
+    "escalated": true,
+    "error": null,
+    "fields": [
+      {
+        "name": "dataset",
+        "expected": "emnist|extended mnist",
+        "actual": "EMNIST -> tfds/emnist",
+        "points": 40,
+        "max_points": 40,
+        "scored": true
+      },
+      {
+        "name": "num_classes",
+        "expected": [
+          62,
+          47,
+          26,
+          10
+        ],
+        "actual": "62",
+        "points": 12,
+        "max_points": 12,
+        "scored": true
+      },
+      {
+        "name": "train_size",
+        "expected": [],
+        "actual": "731668",
+        "points": 0.0,
+        "max_points": 12,
+        "scored": false
+      },
+      {
+        "name": "test_size",
+        "expected": [],
+        "actual": "82587",
+        "points": 0.0,
+        "max_points": 8,
+        "scored": false
+      },
+      {
+        "name": "input_shape",
+        "expected": [
+          [
+            1,
+            28,
+            28
+          ]
+        ],
+        "actual": "[1, 28, 28]",
+        "points": 13,
+        "max_points": 13,
+        "scored": true
+      },
+      {
+        "name": "steps",
+        "expected": [],
+        "actual": "[]",
+        "points": 0.0,
+        "max_points": 15,
+        "scored": false
+      }
+    ]
+  }
+]
