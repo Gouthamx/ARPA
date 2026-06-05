@@ -1,0 +1,116 @@
+# Standard normalization layer definitions
+
+batch_normalization:
+  aliases:
+    - "batchnorm"
+    - "batch norm"
+    - "bn"
+    - "batch normalization"
+  definition: "Normalizes activations using batch statistics (mean and variance computed across the batch dimension)"
+  canonical_implementation: "torch.nn.BatchNorm2d"
+  parameters:
+    num_features: "Number of channels (C from an input of size N,C,H,W) (required)"
+    eps: "Value added to denominator for numerical stability (default: 1e-5)"
+    momentum: "Value used for running mean/var computation (default: 0.1)"
+    affine: "Whether to learn scale (gamma) and shift (beta) parameters (default: True)"
+    track_running_stats: "Whether to track running mean and variance (default: True)"
+  pytorch_signature: "BatchNorm2d(num_features, eps=1e-5, momentum=0.1, affine=True, track_running_stats=True)"
+  forward_pass: "mean = input.mean([0,2,3]); var = input.var([0,2,3]); normalized = (input - mean) / sqrt(var + eps); output = gamma * normalized + beta"
+  reference: "Ioffe & Szegedy, Batch Normalization: Accelerating Deep Network Training, 2015"
+  paper_url: "https://arxiv.org/abs/1502.03167"
+  confidence_when_used: "inferred"
+  domain_default: "computer vision with normal batch sizes (>8)"
+
+sync_batch_normalization:
+  aliases:
+    - "syncbn"
+    - "sync batch norm"
+    - "synchronized batch normalization"
+    - "synced batchnorm"
+  definition: "Batch normalization that synchronizes statistics across multiple GPUs in distributed training"
+  canonical_implementation: "torch.nn.SyncBatchNorm"
+  parameters:
+    num_features: "Number of channels (required)"
+    eps: "Numerical stability constant (default: 1e-5)"
+    momentum: "Running statistics momentum (default: 0.1)"
+    affine: "Learnable parameters (default: True)"
+  pytorch_signature: "SyncBatchNorm(num_features, eps=1e-5, momentum=0.1, affine=True)"
+  forward_pass: "Same as BatchNorm2d but statistics computed across all processes/GPUs"
+  reference: "PyTorch documentation, used in distributed training"
+  confidence_when_used: "inferred"
+  domain_default: "multi-GPU distributed training"
+
+layer_normalization:
+  aliases:
+    - "layernorm"
+    - "layer norm"
+    - "ln"
+  definition: "Normalizes activations across the feature dimension (per sample, not across batch)"
+  canonical_implementation: "torch.nn.LayerNorm"
+  parameters:
+    normalized_shape: "Input shape from an expected input (required, can be int or list of ints)"
+    eps: "Value added for numerical stability (default: 1e-5)"
+    elementwise_affine: "Whether to learn scale and shift parameters (default: True)"
+  pytorch_signature: "LayerNorm(normalized_shape, eps=1e-5, elementwise_affine=True)"
+  forward_pass: "mean = input.mean(over_normalized_dims); var = input.var(over_normalized_dims); normalized = (input - mean) / sqrt(var + eps); output = gamma * normalized + beta"
+  reference: "Ba et al., Layer Normalization, 2016"
+  paper_url: "https://arxiv.org/abs/1607.06450"
+  confidence_when_used: "inferred"
+  domain_default: "transformers, RNNs, and NLP models"
+
+group_normalization:
+  aliases:
+    - "groupnorm"
+    - "group norm"
+    - "gn"
+  definition: "Divides channels into groups and normalizes within each group independently (works well with small batch sizes)"
+  canonical_implementation: "torch.nn.GroupNorm"
+  parameters:
+    num_groups: "Number of groups to divide channels into (required)"
+    num_channels: "Number of channels (required)"
+    eps: "Value added for numerical stability (default: 1e-5)"
+    affine: "Whether to learn scale and shift parameters (default: True)"
+  pytorch_signature: "GroupNorm(num_groups, num_channels, eps=1e-5, affine=True)"
+  forward_pass: "Reshape input to (N, num_groups, num_channels/num_groups, H, W); compute mean and var over (2,3,4) dims; normalize; reshape back"
+  reference: "Wu & He, Group Normalization, 2018"
+  paper_url: "https://arxiv.org/abs/1803.08494"
+  confidence_when_used: "inferred"
+  domain_default: "small batch sizes (batch_size < 8) or object detection/segmentation"
+
+instance_normalization:
+  aliases:
+    - "instancenorm"
+    - "instance norm"
+    - "in"
+  definition: "Normalizes each sample and channel independently (equivalent to GroupNorm with num_groups=num_channels)"
+  canonical_implementation: "torch.nn.InstanceNorm2d"
+  parameters:
+    num_features: "Number of channels (C from input of size N,C,H,W) (required)"
+    eps: "Value added for numerical stability (default: 1e-5)"
+    momentum: "Running statistics momentum (default: 0.1)"
+    affine: "Whether to learn scale and shift (default: False)"
+    track_running_stats: "Whether to track running stats (default: False)"
+  pytorch_signature: "InstanceNorm2d(num_features, eps=1e-5, momentum=0.1, affine=False, track_running_stats=False)"
+  forward_pass: "For each sample and channel: mean = input[n,c].mean(); var = input[n,c].var(); normalized = (input[n,c] - mean) / sqrt(var + eps); if affine: output = gamma * normalized + beta"
+  reference: "Ulyanov et al., Instance Normalization, 2016"
+  paper_url: "https://arxiv.org/abs/1607.08022"
+  confidence_when_used: "inferred"
+  domain_default: "style transfer and GANs"
+
+rmsnorm:
+  aliases:
+    - "rms norm"
+    - "root mean square normalization"
+    - "rms normalization"
+  definition: "Simplified normalization using only the root mean square (no mean centering), popular in LLMs"
+  canonical_implementation: "Custom or from libraries like apex: RMSNorm"
+  parameters:
+    normalized_shape: "Shape to normalize over (required)"
+    eps: "Numerical stability constant (default: 1e-5)"
+    elementwise_affine: "Learnable scale parameter (default: True)"
+  pytorch_signature: "RMSNorm(normalized_shape, eps=1e-5)"
+  forward_pass: "rms = sqrt(mean(input^2) + eps); output = input / rms; if affine: output = gamma * output"
+  reference: "Zhang & Sennrich, Root Mean Square Layer Normalization, 2019"
+  paper_url: "https://arxiv.org/abs/1910.07467"
+  confidence_when_used: "inferred"
+  domain_default: "large language models (LLMs)"

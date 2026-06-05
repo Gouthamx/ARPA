@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ARPA_ROOT = Path(__file__).resolve().parents[1]
 
+# Load .env file explicitly
+load_dotenv(PROJECT_ROOT / ".env")
+
 
 class ARPASettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ARPA_",
-        env_file=".env",
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
         extra="ignore",
     )
 
@@ -30,9 +36,8 @@ class ARPASettings(BaseSettings):
     # Gemini (Google Generative Language API)
     gemini_api_key: str | None = None
     gemini_base_url: str = "https://generativelanguage.googleapis.com"
-    # gemini-2.5-flash-lite is faster and has lower demand than the full flash model
-    gemini_general_model: str = "gemini-2.5-flash-lite"
-    gemini_code_model: str = "gemini-2.5-flash-lite"
+    gemini_general_model: str = "gemini-2.0-flash-lite"  # Will be overridden by .env
+    gemini_code_model: str = "gemini-2.0-flash-lite"  # Will be overridden by .env
     gemini_timeout_s: float = 120.0
     gemini_max_retries: int = 3
 

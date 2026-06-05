@@ -1,0 +1,91 @@
+# Standard attention mechanism definitions
+
+multi_head_attention:
+  aliases:
+    - "multihead attention"
+    - "multi-head attention"
+    - "mha"
+    - "transformer attention"
+  definition: "Attention mechanism with multiple parallel attention heads that attend to different representation subspaces"
+  canonical_implementation: "torch.nn.MultiheadAttention"
+  parameters:
+    embed_dim: "Total dimension of the model (required)"
+    num_heads: "Number of parallel attention heads (required)"
+    dropout: "Dropout probability on attention weights (default: 0.0)"
+    bias: "Whether to add bias to input/output projection layers (default: True)"
+    kdim: "Dimension of keys (default: embed_dim)"
+    vdim: "Dimension of values (default: embed_dim)"
+  pytorch_signature: "MultiheadAttention(embed_dim, num_heads, dropout=0.0, bias=True, kdim=None, vdim=None)"
+  forward_pass: "For each head: Q,K,V = linear projections; attention = softmax(Q@K.T / sqrt(d_k)); out = attention @ V; concatenate heads; final linear projection"
+  reference: "Vaswani et al., Attention Is All You Need, 2017"
+  paper_url: "https://arxiv.org/abs/1706.03762"
+  confidence_when_used: "inferred"
+
+self_attention:
+  aliases:
+    - "selfattention"
+    - "self attention"
+    - "intra-attention"
+  definition: "Attention mechanism where queries, keys, and values all come from the same input sequence"
+  canonical_implementation: "torch.nn.MultiheadAttention with same input for Q, K, V"
+  parameters:
+    embed_dim: "Dimension of input embeddings (required)"
+    num_heads: "Number of attention heads (default: 1)"
+    dropout: "Dropout probability (default: 0.0)"
+  pytorch_signature: "MultiheadAttention(embed_dim, num_heads) called with attn_output = mha(x, x, x)"
+  forward_pass: "Q = K = V = input; attention_weights = softmax(Q@K.T / sqrt(d_k)); output = attention_weights @ V"
+  reference: "Vaswani et al., Attention Is All You Need, 2017"
+  paper_url: "https://arxiv.org/abs/1706.03762"
+  confidence_when_used: "inferred"
+
+scaled_dot_product_attention:
+  aliases:
+    - "scaled dot product"
+    - "dot product attention"
+    - "scaled attention"
+  definition: "Attention mechanism computing softmax(Q@K.T / sqrt(d_k)) @ V"
+  canonical_implementation: "torch.nn.functional.scaled_dot_product_attention"
+  parameters:
+    query: "Query tensor of shape (batch, ..., seq_len, embed_dim)"
+    key: "Key tensor of shape (batch, ..., seq_len, embed_dim)"
+    value: "Value tensor of shape (batch, ..., seq_len, embed_dim)"
+    attn_mask: "Optional attention mask (default: None)"
+    dropout_p: "Dropout probability (default: 0.0)"
+  pytorch_signature: "scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0)"
+  forward_pass: "scores = query @ key.transpose(-2, -1) / sqrt(d_k); scores = softmax(scores); if dropout: scores = dropout(scores); output = scores @ value"
+  reference: "Vaswani et al., Attention Is All You Need, 2017"
+  paper_url: "https://arxiv.org/abs/1706.03762"
+  confidence_when_used: "inferred"
+
+cross_attention:
+  aliases:
+    - "crossattention"
+    - "cross attention"
+    - "encoder-decoder attention"
+  definition: "Attention mechanism where queries come from one sequence and keys/values come from another sequence"
+  canonical_implementation: "torch.nn.MultiheadAttention with different inputs for Q vs K,V"
+  parameters:
+    embed_dim: "Dimension of query embeddings (required)"
+    num_heads: "Number of attention heads (required)"
+    kdim: "Dimension of key embeddings (default: embed_dim)"
+    vdim: "Dimension of value embeddings (default: embed_dim)"
+  pytorch_signature: "MultiheadAttention(embed_dim, num_heads, kdim, vdim) called with attn_output = mha(query, key, value)"
+  forward_pass: "Q = query_input; K = V = context_input; attention_weights = softmax(Q@K.T / sqrt(d_k)); output = attention_weights @ V"
+  reference: "Vaswani et al., Attention Is All You Need, 2017"
+  paper_url: "https://arxiv.org/abs/1706.03762"
+  confidence_when_used: "inferred"
+
+additive_attention:
+  aliases:
+    - "bahdanau attention"
+    - "concat attention"
+  definition: "Attention mechanism using tanh(W[query; key]) instead of dot product"
+  canonical_implementation: "Custom implementation: score = v.T @ tanh(W_q @ query + W_k @ key)"
+  parameters:
+    query_dim: "Dimension of query vectors (required)"
+    key_dim: "Dimension of key vectors (required)"
+    hidden_dim: "Hidden dimension for the feedforward network (required)"
+  forward_pass: "score = v @ tanh(W_q @ query + W_k @ key); attention = softmax(score); output = attention @ value"
+  reference: "Bahdanau et al., Neural Machine Translation by Jointly Learning to Align and Translate, 2014"
+  paper_url: "https://arxiv.org/abs/1409.0473"
+  confidence_when_used: "inferred"

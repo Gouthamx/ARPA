@@ -1,0 +1,69 @@
+# Standard residual block definitions
+# Reference: He et al., Deep Residual Learning for Image Recognition, 2015
+
+basic_block:
+  aliases:
+    - "residual block"
+    - "basic residual block"
+    - "resnet basic block"
+    - "basic residual"
+  definition: "Residual connection x + F(x) where F consists of two 3x3 convolutions with batch normalization and ReLU activation"
+  canonical_implementation: "torchvision.models.resnet.BasicBlock"
+  parameters:
+    in_channels: "Number of input channels (required)"
+    out_channels: "Number of output channels (required)"
+    stride: "Stride for the first convolution (default: 1)"
+    downsample: "Optional downsampling layer for the residual connection when dimensions don't match"
+  pytorch_signature: "BasicBlock(inplanes, planes, stride=1, downsample=None)"
+  forward_pass: "identity = x; out = conv1(x); out = bn1(out); out = relu(out); out = conv2(out); out = bn2(out); if downsample: identity = downsample(x); out += identity; out = relu(out)"
+  reference: "He et al., Deep Residual Learning for Image Recognition, 2015"
+  paper_url: "https://arxiv.org/abs/1512.03385"
+  confidence_when_used: "inferred"
+
+bottleneck_block:
+  aliases:
+    - "bottleneck"
+    - "resnet bottleneck"
+    - "bottleneck residual block"
+    - "bottleneck block"
+  definition: "Residual connection x + F(x) where F consists of 1x1 conv (reduce) → 3x3 conv → 1x1 conv (expand) with batch normalization"
+  canonical_implementation: "torchvision.models.resnet.Bottleneck"
+  parameters:
+    in_channels: "Number of input channels (required)"
+    out_channels: "Number of output channels after expansion (required)"
+    stride: "Stride for the 3x3 convolution (default: 1)"
+    expansion: "Channel expansion factor applied to planes (default: 4)"
+  pytorch_signature: "Bottleneck(inplanes, planes, stride=1, downsample=None, expansion=4)"
+  forward_pass: "identity = x; out = conv1(x); out = bn1(out); out = relu(out); out = conv2(out); out = bn2(out); out = relu(out); out = conv3(out); out = bn3(out); if downsample: identity = downsample(x); out += identity; out = relu(out)"
+  reference: "He et al., Deep Residual Learning for Image Recognition, 2015"
+  paper_url: "https://arxiv.org/abs/1512.03385"
+  confidence_when_used: "inferred"
+
+preactivation_block:
+  aliases:
+    - "pre-activation residual block"
+    - "preactivation block"
+    - "full pre-activation"
+  definition: "Residual block with batch normalization and ReLU before convolutions (BN-ReLU-Conv ordering)"
+  canonical_implementation: "Custom implementation or timm.models.resnet.PreActBlock"
+  parameters:
+    in_channels: "Number of input channels (required)"
+    out_channels: "Number of output channels (required)"
+    stride: "Stride for convolutions (default: 1)"
+  forward_pass: "out = bn1(x); out = relu(out); out = conv1(out); out = bn2(out); out = relu(out); out = conv2(out); shortcut = conv_shortcut(x) if needed; return out + shortcut"
+  reference: "He et al., Identity Mappings in Deep Residual Networks, 2016"
+  paper_url: "https://arxiv.org/abs/1603.05027"
+  confidence_when_used: "inferred"
+
+residual_connection:
+  aliases:
+    - "skip connection"
+    - "shortcut connection"
+    - "identity mapping"
+    - "residual skip"
+  definition: "Direct connection that adds the input to the output of a series of layers, enabling gradient flow"
+  canonical_implementation: "out = F(x) + x or out = F(x) + downsample(x)"
+  parameters:
+    downsample: "Optional projection layer when input/output dimensions differ"
+  reference: "He et al., Deep Residual Learning for Image Recognition, 2015"
+  confidence_when_used: "inferred"

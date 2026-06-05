@@ -85,7 +85,16 @@ Return JSON:
       "warning": null or "HIGH UNCERTAINTY ..."
     }}
   ]
-}}"""
+}}
+
+Code constraints:
+  - The module must be importable and syntactically valid Python.
+  - Define load_splits; do not remove or rename it.
+  - Do not include an if __name__ == "__main__" block, demos, prints, or example
+    batch-inspection code.
+  - Keep comments concise and avoid multiline string interpolation in generated
+    print/debug statements.
+"""
 
 
 class DatasetAgent:
@@ -136,6 +145,7 @@ class DatasetAgent:
         dataset_description: DatasetDescription | None = None,
         use_llm_extraction: bool = True,
         use_docker: bool = True,
+        verify_loading: bool = True,
     ) -> DatasetAgentResult:
         """
         Execute the full dataset pipeline.
@@ -192,39 +202,42 @@ class DatasetAgent:
         verify_log = ""
         last_code = loading_code
 
-        for attempt in range(1, self.max_verify_retries + 1):
-            result.verify_attempts = attempt
-            verification = self.verifier.verify(
-                last_code,
-                expectations,
-                use_docker=use_docker,
-            )
-            verify_log = verification.raw_log
-            if verification.passed:
-                verified = True
-                loading_code = last_code
-                break
-
-            logger.warning(
-                "Verification attempt {}/{} failed: {}",
-                attempt,
-                self.max_verify_retries,
-                verification.failed_checks or verification.error,
-            )
-            if attempt < self.max_verify_retries:
-                last_code = self._regenerate_after_failure(
+        if verify_loading:
+            for attempt in range(1, self.max_verify_retries + 1):
+                result.verify_attempts = attempt
+                verification = self.verifier.verify(
                     last_code,
-                    verification,
-                    desc,
-                    resolution,
+                    expectations,
+                    use_docker=use_docker,
                 )
+                verify_log = verification.raw_log
+                if verification.passed:
+                    verified = True
+                    loading_code = last_code
+                    break
 
-        if not verified:
-            result.escalated = True
-            result.escalation_reason = (
-                f"Dataset verification failed after {self.max_verify_retries} attempts"
-            )
-            result.loading_code = last_code
+                logger.warning(
+                    "Verification attempt {}/{} failed: {}",
+                    attempt,
+                    self.max_verify_retries,
+                    verification.failed_checks or verification.error,
+                )
+                if attempt < self.max_verify_retries:
+                    last_code = self._regenerate_after_failure(
+                        last_code,
+                        verification,
+                        desc,
+                        resolution,
+                    )
+
+            if not verified:
+                result.escalated = True
+                result.escalation_reason = (
+                    f"Dataset verification failed after {self.max_verify_retries} attempts"
+                )
+                result.loading_code = last_code
+        else:
+            logger.info("Dataset loading verification skipped.")
 
         # Step 5 — Output DatasetSpec
         result.spec = DatasetSpec(
