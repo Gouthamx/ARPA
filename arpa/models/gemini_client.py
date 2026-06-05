@@ -161,20 +161,14 @@ class GeminiClient:
                 with httpx.Client(timeout=timeout) as client:
                     resp = client.post(url, headers=headers, json=payload)
                 if resp.status_code == 429:
-                    delay = self._retry_delay(resp, attempt)
-                    logger.warning(
-                        "Gemini rate limited (429) on %s; retry %d/%d in %.1fs",
+                    body = resp.text[:300]
+                    logger.error(
+                        "Gemini rate limited (429) on %s — not retrying: %s",
                         model,
-                        attempt,
-                        max_retries,
-                        delay,
+                        body,
                     )
-                    if attempt < max_retries:
-                        time.sleep(delay)
-                        continue
                     raise GeminiError(
-                        f"Gemini quota exhausted for model '{model}' after "
-                        f"{max_retries} attempts: {resp.text[:300]}"
+                        f"Gemini quota/rate-limit exceeded for model '{model}': {body}"
                     )
                 # Other transient server statuses (overloaded / unavailable / gateway
                 # timeout) — retry with backoff before giving up.
@@ -215,21 +209,6 @@ class GeminiClient:
                     time.sleep(compute_backoff(attempt, cap=10.0))
                     continue
         raise GeminiError(f"Gemini request failed after retries: {last_exc}")
-
-    @staticmethod
-    def _retry_delay(resp: httpx.Response, attempt: int) -> float:
-        """Honor the API-provided RetryInfo when present, else exponential backoff."""
-        try:
-            data = resp.json()
-            for detail in data.get("error", {}).get("details", []):
-                if detail.get("@type", "").endswith("RetryInfo"):
-                    raw = detail.get("retryDelay", "")
-                    match = re.match(r"([\d.]+)s", raw)
-                    if match:
-                        return min(float(match.group(1)) + 0.5, 60.0)
-        except Exception:  # noqa: BLE001
-            pass
-        return min(2 ** attempt, 30.0)
 
     @staticmethod
     def _extract_response_text(data: dict[str, Any]) -> str:

@@ -23,8 +23,11 @@ from typing import Callable
 import httpx
 from loguru import logger
 
-# Statuses worth retrying: transient server / rate-limit conditions.
-RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Statuses worth retrying: transient server conditions only.
+# 429 (Too Many Requests / quota exceeded) is intentionally excluded — it
+# signals a hard rate-limit that a brief backoff won't resolve and which the
+# caller should surface immediately as an actionable error.
+RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({408, 425, 500, 502, 503, 504})
 
 
 def parse_retry_after(resp: httpx.Response) -> float | None:

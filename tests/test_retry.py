@@ -18,7 +18,7 @@ def _resp(status: int, headers: dict | None = None) -> httpx.Response:
 
 
 class TestRetryableMatrix:
-    @pytest.mark.parametrize("code", [408, 425, 429, 500, 502, 503, 504])
+    @pytest.mark.parametrize("code", [408, 425, 500, 502, 503, 504])
     def test_transient_statuses_are_retried(self, code, monkeypatch):
         monkeypatch.setattr("arpa.core.retry.time.sleep", lambda *_: None)
         calls = {"n": 0}
@@ -30,6 +30,19 @@ class TestRetryableMatrix:
         resp = request_with_retry(do, max_retries=5, label="t")
         assert resp is not None and resp.status_code == 200
         assert calls["n"] == 3  # retried twice, then succeeded
+
+    def test_429_is_not_retried(self, monkeypatch):
+        monkeypatch.setattr("arpa.core.retry.time.sleep", lambda *_: None)
+        calls = {"n": 0}
+
+        def do():
+            calls["n"] += 1
+            return _resp(429)
+
+        # 429 is not in RETRYABLE_STATUS_CODES — returned immediately on first attempt
+        resp = request_with_retry(do, max_retries=5, label="t")
+        assert resp is not None and resp.status_code == 429
+        assert calls["n"] == 1  # no retry
 
     @pytest.mark.parametrize("code", [400, 401, 403, 404, 422])
     def test_client_errors_are_not_retried(self, code, monkeypatch):
@@ -83,6 +96,9 @@ class TestRetryableMatrix:
 class TestBackoffAndRetryAfter:
     def test_503_is_in_retryable_set(self):
         assert 503 in RETRYABLE_STATUS_CODES
+
+    def test_429_is_not_in_retryable_set(self):
+        assert 429 not in RETRYABLE_STATUS_CODES
 
     def test_parse_retry_after_seconds(self):
         assert parse_retry_after(_resp(503, {"Retry-After": "5"})) == 5.0
