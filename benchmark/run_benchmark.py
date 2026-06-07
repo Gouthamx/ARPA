@@ -29,6 +29,7 @@ from pathlib import Path
 from loguru import logger
 
 from arpa.agents import DatasetAgent
+from arpa.agents.extraction_agent import ExtractionAgent
 from arpa.tools.pdf_pipeline import PdfToTextPipeline
 from benchmark.ground_truth import GROUND_TRUTH, GroundTruth
 
@@ -193,9 +194,19 @@ def _run_one(key: str, gt: GroundTruth, *, use_docker: bool, out_dir: Path) -> P
         paper_text = txt_path.read_text(encoding="utf-8")
         print(f"          reduced to {len(paper_text)} chars -> {txt_path.name}", flush=True)
 
-        print(f"    [2/3] Layer-2: Gemini extraction + registry resolution ...", flush=True)
+        print(f"    [2/3] ExtractionAgent: extracting methodology ...", flush=True)
+        extraction_agent = ExtractionAgent(backend="gemini")
+        methodology = extraction_agent.run(paper_text, reduce_first=True)
+        if methodology.dataset_description:
+            print(f"          -> dataset='{methodology.dataset_description.name}'", flush=True)
+
+        print(f"    [3/3] DatasetAgent: registry resolution + verification ...", flush=True)
         agent = DatasetAgent(backend="gemini")
-        result = agent.run(paper_context=paper_text, use_llm_extraction=True, use_docker=use_docker)
+        result = agent.run(
+            methodology=methodology,
+            use_docker=use_docker,
+            verify_loading=use_docker,
+        )
 
         if result.spec is not None:
             print(f"          -> dataset='{result.spec.dataset_name}'  "
@@ -205,7 +216,7 @@ def _run_one(key: str, gt: GroundTruth, *, use_docker: bool, out_dir: Path) -> P
         else:
             print(f"          -> no spec produced (escalated: {result.escalation_reason})", flush=True)
 
-        print(f"    [3/3] scoring against ground truth ...", flush=True)
+        print(f"    Scoring against ground truth ...", flush=True)
         pr = _evaluate(key, gt, result)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Benchmark run failed for {}", key)

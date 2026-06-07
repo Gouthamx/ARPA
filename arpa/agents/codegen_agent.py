@@ -2,12 +2,12 @@
 
 Pipeline:
   1. Load MethodologySpec from extraction
-  2. Generate dataset loading code (delegate to DatasetAgent)
-  3. Generate model architecture code
-  4. Generate training script
-  5. Generate evaluation script
-  6. Verify generated code compiles
-  7. Return complete runnable codebase
+  2. Generate model architecture code
+  3. Generate training script
+  4. Verify generated code compiles
+  5. Return complete runnable codebase
+
+Note: Dataset loading code should come from DatasetAgent.loading_code
 """
 
 from __future__ import annotations
@@ -110,28 +110,6 @@ Generate a complete train.py file with:
 Return JSON: {{"code": "complete Python code as string"}}
 """
 
-DATASET_LOADER_PROMPT = """Generate a complete PyTorch dataset loading module.
-
-Dataset: {dataset_name}
-Input shape: {input_shape}
-Num classes: {num_classes}
-Train size: {train_size}
-Test size: {test_size}
-
-Preprocessing/transforms:
-{transform_description}
-
-Generate a complete dataset_loader.py file with:
-1. Import from torchvision.datasets or implement custom Dataset
-2. get_train_loader() function returning DataLoader
-3. get_test_loader() function returning DataLoader
-4. Proper transforms based on the paper
-5. Data normalization if appropriate
-6. Docstrings and comments
-
-Return JSON: {{"code": "complete Python code as string"}}
-"""
-
 
 class CodeGenAgent:
     """Autonomous code generation from extracted methodology."""
@@ -171,7 +149,7 @@ class CodeGenAgent:
         # Load methodology
         if methodology is None and methodology_path:
             methodology = self._load_methodology(methodology_path)
-        
+
         if methodology is None:
             result.escalated = True
             result.escalation_reason = "No methodology provided"
@@ -187,22 +165,20 @@ class CodeGenAgent:
 
         # Generate files in order
         try:
-            # 1. Dataset loader
-            dataset_file = self._generate_dataset_loader(methodology, result)
-            if dataset_file:
-                result.files.append(dataset_file)
-
-            # 2. Model definition
+            # Note: dataset_loader.py should come from DatasetAgent.loading_code
+            # CodeGenAgent focuses on model.py and train.py
+            
+            # 1. Model definition
             model_file = self._generate_model(methodology, result)
             if model_file:
                 result.files.append(model_file)
 
-            # 3. Training script
+            # 2. Training script
             train_file = self._generate_training_script(methodology, result)
             if train_file:
                 result.files.append(train_file)
 
-            # 4. Write files if output_dir provided
+            # 2. Write files if output_dir provided
             if output_dir:
                 self._write_files(result.files, Path(output_dir))
 
@@ -222,60 +198,6 @@ class CodeGenAgent:
             data = json.load(f)
         return MethodologySpec(**data)
 
-    def _generate_dataset_loader(
-        self,
-        methodology: MethodologySpec,
-        result: CodegenResult,
-    ) -> GeneratedFile | None:
-        """Generate dataset_loader.py file."""
-        desc = methodology.dataset_description
-        if not desc:
-            return None
-
-        logger.info("Generating dataset loader for {}", desc.name)
-
-        prompt = DATASET_LOADER_PROMPT.format(
-            dataset_name=desc.name,
-            input_shape=desc.input_shape or [1, 28, 28],
-            num_classes=desc.num_classes or 10,
-            train_size=desc.train_size or "unknown",
-            test_size=desc.test_size or "unknown",
-            transform_description=desc.transform_description or "standard normalization",
-        )
-
-        try:
-            raw = self.llm.chat(
-                [
-                    {"role": "system", "content": CODEGEN_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                model=self.llm.code_model,
-                format_json=True,
-            )
-            data = self.llm.extract_json(raw)
-            code = data.get("code", "")
-
-            if not code:
-                logger.warning("Empty code generated for dataset loader")
-                return None
-
-            gen_file = GeneratedFile(
-                path="dataset_loader.py",
-                content=code,
-                purpose="Dataset loading and preprocessing",
-            )
-
-            # Verify syntax
-            self._verify_syntax(gen_file)
-            result.generation_log.append("Generated dataset_loader.py")
-
-            return gen_file
-
-        except Exception as exc:
-            logger.error("Dataset loader generation failed: {}", exc)
-            result.generation_log.append(f"Dataset loader generation failed: {exc}")
-            return None
-
     def _generate_model(
         self,
         methodology: MethodologySpec,
@@ -290,8 +212,8 @@ class CodeGenAgent:
 
         # Check if this is a benchmark paper
         is_benchmark = (
-            hasattr(methodology, 'benchmark_experiments') and 
-            methodology.benchmark_experiments and 
+            hasattr(methodology, 'benchmark_experiments') and
+            methodology.benchmark_experiments and
             len(methodology.benchmark_experiments) > 0
         )
 
@@ -368,27 +290,27 @@ class CodeGenAgent:
     ) -> GeneratedFile | None:
         """Generate model code for benchmark paper with multiple models."""
         desc = methodology.dataset_description
-        
+
         # Find best performing model
         best_model = None
         best_metric = 0.0
-        
+
         for exp in methodology.benchmark_experiments:
             if exp.dataset_metric and exp.dataset_metric > best_metric:
                 best_metric = exp.dataset_metric
                 best_model = exp
-        
+
         if not best_model:
             logger.warning("No benchmark experiments found, falling back to simple model")
             return None
-        
+
         logger.info(
             "Best model: {} with {}={:.4f}",
             best_model.model_name,
             best_model.metric_name,
             best_model.dataset_metric
         )
-        
+
         prompt = f"""Generate PyTorch/sklearn code for implementing and training the best model from a benchmark paper.
 
 Dataset: {desc.name}
@@ -476,8 +398,8 @@ Return JSON: {{"code": "complete Python code as string"}}
 
         # Check if this is a benchmark paper
         is_benchmark = (
-            hasattr(methodology, 'benchmark_experiments') and 
-            methodology.benchmark_experiments and 
+            hasattr(methodology, 'benchmark_experiments') and
+            methodology.benchmark_experiments and
             len(methodology.benchmark_experiments) > 0
         )
 
@@ -578,20 +500,20 @@ Return JSON: {{"code": "complete Python code as string"}}
     ) -> GeneratedFile | None:
         """Generate training script for benchmark paper that uses model.py."""
         desc = methodology.dataset_description
-        
+
         # Find best performing model
         best_model = None
         best_metric = 0.0
-        
+
         for exp in methodology.benchmark_experiments:
             if exp.dataset_metric and exp.dataset_metric > best_metric:
                 best_metric = exp.dataset_metric
                 best_model = exp
-        
+
         if not best_model:
             logger.warning("No benchmark experiments found")
             return None
-        
+
         prompt = f"""Generate a simple Python training script (train.py) for a benchmark experiment.
 
 Dataset: {desc.name}

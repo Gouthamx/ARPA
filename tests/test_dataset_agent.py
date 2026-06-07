@@ -95,7 +95,7 @@ class TestDatasetAgent:
         agent = DatasetAgent()
         desc = DatasetDescription(name="totally_fake_dataset_xyz_123")
         with patch.object(agent.resolver, "resolve", return_value=(None, ["ESCALATE"])):
-            result = agent.run(dataset_description=desc, use_llm_extraction=False)
+            result = agent.run(dataset_description=desc)
         assert result.escalated
         assert "Could not resolve" in (result.escalation_reason or "")
 
@@ -129,7 +129,6 @@ class TestDatasetAgent:
                 with patch.object(agent.verifier, "verify", return_value=mock_verify):
                     result = agent.run(
                         dataset_description=desc,
-                        use_llm_extraction=False,
                         use_docker=False,
                     )
 
@@ -154,7 +153,29 @@ class TestDatasetAgent:
                     verify.return_value = VerificationResult(passed=True, checks=[])
                     result = agent.run(
                         methodology=methodology,
-                        use_llm_extraction=False,
                         use_docker=False,
                     )
         assert result.spec is not None
+
+    def test_run_can_skip_loading_verification(self, mock_resolution):
+        agent = DatasetAgent()
+        desc = DatasetDescription(name="cifar10")
+
+        from arpa.core.confidence import ConfidenceSummary
+
+        with patch.object(agent.resolver, "resolve", return_value=(mock_resolution, [])):
+            with patch.object(
+                agent,
+                "_generate_loading_code",
+                return_value=("def load_splits():\n    return None, None, None\n", [], ConfidenceSummary()),
+            ):
+                with patch.object(agent.verifier, "verify") as verify:
+                    result = agent.run(
+                        dataset_description=desc,
+                        verify_loading=False,
+                    )
+
+        verify.assert_not_called()
+        assert result.spec is not None
+        assert not result.escalated
+        assert result.verify_attempts == 0

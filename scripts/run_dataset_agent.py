@@ -20,7 +20,8 @@ from pathlib import Path
 from loguru import logger
 
 from arpa.agents import DatasetAgent
-from arpa.core.state import DatasetDescription
+from arpa.agents.extraction_agent import ExtractionAgent
+from arpa.core.state import DatasetDescription, MethodologySpec
 from arpa.tools.pdf_pipeline import PdfToTextPipeline, is_pdf
 
 
@@ -133,11 +134,18 @@ def main() -> int:
             transform_description=args.transforms,
         )
 
+    # Build methodology from components
+    methodology = None
+    if paper_context and not args.no_llm:
+        logger.info("Running ExtractionAgent to get methodology...")
+        extraction_agent = ExtractionAgent(backend=args.backend)
+        methodology = extraction_agent.run(paper_context, reduce_first=True)
+    elif dataset_description:
+        methodology = MethodologySpec(dataset_description=dataset_description)
+
     agent = DatasetAgent(backend=args.backend)
     result = agent.run(
-        paper_context=paper_context,
-        dataset_description=dataset_description,
-        use_llm_extraction=not args.no_llm,
+        methodology=methodology,
         use_docker=args.use_docker,
     )
 

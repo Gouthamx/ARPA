@@ -19,12 +19,10 @@ from arpa.core.state import (
     DatasetAgentResult,
     DatasetDescription,
     DatasetSpec,
-    ExtractedDatasetInfo,
     MethodologySpec,
     PreprocessStep,
 )
 from arpa.models import LLMClient, OllamaClient, get_llm_client
-from arpa.tools.dataset_extractor import DatasetExtractor
 from arpa.tools.dataset_metadata import DatasetMetadataResolver
 from arpa.tools.dataset_tools import DatasetResolver, build_loading_code_skeleton
 from arpa.tools.docker_tools import DatasetSandboxVerifier, VerificationExpectations
@@ -109,7 +107,6 @@ class DatasetAgent:
         *,
         llm: LLMClient | None = None,
         backend: str | None = None,
-        extractor: DatasetExtractor | None = None,
         metadata_resolver: DatasetMetadataResolver | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -127,8 +124,7 @@ class DatasetAgent:
         # Keep `self.ollama` as an alias for backward compatibility.
         self.ollama = self.llm
         self.resolver = resolver or DatasetResolver()
-        # Layer 2 semantic extractor + dynamic property resolver.
-        self.extractor = extractor or DatasetExtractor(self.llm)
+        # Dynamic property resolver from live registries.
         self.metadata_resolver = metadata_resolver or DatasetMetadataResolver()
         self.verifier = verifier or DatasetSandboxVerifier(
             image=self.settings.docker_sandbox_image,
@@ -143,27 +139,39 @@ class DatasetAgent:
         *,
         paper_context: str | None = None,
         dataset_description: DatasetDescription | None = None,
-        use_llm_extraction: bool = True,
         use_docker: bool = True,
         verify_loading: bool = True,
     ) -> DatasetAgentResult:
         """
         Execute the full dataset pipeline.
 
-        Provide either `methodology.dataset_description`, `dataset_description`,
-        or `paper_context` (raw text for LLM extraction).
+        Provide either `methodology.dataset_description` or `dataset_description`.
+        The `paper_context` parameter is DEPRECATED - use ExtractionAgent first
+        to get MethodologySpec, then pass methodology to this agent.
         """
         result = DatasetAgentResult()
 
-        # Step 1 — Name / metadata extraction (Layer 2 semantic extraction)
+        # Step 1 — Get dataset description (prefer from methodology)
         desc = dataset_description
         if desc is None and methodology and methodology.dataset_description:
             desc = methodology.dataset_description
-        if desc is None and paper_context and use_llm_extraction:
-            desc = self._extract_description(paper_context)
+        
+        # DEPRECATED PATH: Direct LLM extraction (use ExtractionAgent instead)
+        if desc is None and paper_context:
+            logger.warning(
+                "DatasetAgent called with paper_context but no dataset_description. "
+                "This is deprecated - use ExtractionAgent first to get MethodologySpec."
+            )
+            result.escalated = True
+            result.escalation_reason = (
+                "No dataset description provided. "
+                "Run ExtractionAgent first to get MethodologySpec with dataset_description."
+            )
+            return result
+            
         if desc is None:
             result.escalated = True
-            result.escalation_reason = "No dataset description available for extraction"
+            result.escalation_reason = "No dataset description available"
             return result
 
         logger.info("Dataset agent: resolving '{}'", desc.name)
@@ -257,19 +265,6 @@ class DatasetAgent:
         )
         result.verified = verified
         return result
-
-    def _extract_description(self, paper_context: str) -> DatasetDescription:
-        """Layer 2 semantic extraction: full paper text -> DatasetDescription.
-
-        Delegates to :class:`DatasetExtractor`, which runs Layer-1 structural
-        reduction and then a schema-constrained LLM call. Falls back to a
-        name-only description if extraction yields nothing usable.
-        """
-        info: ExtractedDatasetInfo = self.extractor.extract(paper_context)
-        desc = info.to_description(raw_context=paper_context)
-        if not info.name:
-            logger.warning("Semantic extraction did not identify a dataset name.")
-        return desc
 
     def _enrich_with_metadata(self, desc: DatasetDescription) -> DatasetDescription:
         """Fill missing properties from live registries, deferring to paper values.

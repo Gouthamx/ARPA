@@ -57,11 +57,11 @@ class ComponentKnowledgeBase:
             kb_dir = Path(__file__).parent / "components"
         else:
             kb_dir = Path(kb_dir)
-        
+
         self.kb_dir = kb_dir
         self.components: dict[str, ComponentKnowledge] = {}
         self._alias_map: dict[str, str] = {}  # alias → canonical name
-        
+
         self._load_all_components()
         logger.info(
             "Loaded {} component definitions from knowledge base (kb_dir={})",
@@ -77,7 +77,7 @@ class ComponentKnowledgeBase:
                 self.kb_dir,
             )
             return
-        
+
         for yaml_file in self.kb_dir.glob("*.yaml"):
             try:
                 self._load_component_file(yaml_file)
@@ -92,15 +92,15 @@ class ComponentKnowledgeBase:
         """Load component definitions from a single YAML file."""
         with open(yaml_file) as f:
             data = yaml.safe_load(f)
-        
+
         if not isinstance(data, dict):
             logger.warning("Skipping invalid component file: {}", yaml_file.name)
             return
-        
+
         for component_name, spec in data.items():
             if not isinstance(spec, dict):
                 continue
-            
+
             try:
                 comp = ComponentKnowledge(
                     name=component_name,
@@ -115,16 +115,16 @@ class ComponentKnowledgeBase:
                     confidence_when_used=spec.get("confidence_when_used", "inferred"),
                     domain_default=spec.get("domain_default"),
                 )
-                
+
                 # Store by canonical name
                 normalized_name = self._normalize_key(component_name)
                 self.components[normalized_name] = comp
-                
+
                 # Build alias map
                 for alias in comp.aliases:
                     normalized_alias = self._normalize_key(alias)
                     self._alias_map[normalized_alias] = normalized_name
-                
+
             except Exception as exc:
                 logger.warning(
                     "Failed to parse component '{}' in {}: {}",
@@ -187,27 +187,27 @@ class ComponentKnowledgeBase:
             name_norm = self._normalize_key(name)
             if name_norm in self.components:
                 return self.components[name_norm]
-        
+
         # Try exact match on kind
         if kind:
             kind_norm = self._normalize_key(kind)
             if kind_norm in self.components:
                 return self.components[kind_norm]
-        
+
         # Try alias match on name
         if name:
             name_norm = self._normalize_key(name)
             if name_norm in self._alias_map:
                 canonical = self._alias_map[name_norm]
                 return self.components[canonical]
-        
+
         # Try alias match on kind
         if kind:
             kind_norm = self._normalize_key(kind)
             if kind_norm in self._alias_map:
                 canonical = self._alias_map[kind_norm]
                 return self.components[canonical]
-        
+
         # Try substring matching (conservative)
         # Only match if query contains component name, not vice versa
         # This prevents "gated_cross_attention" from matching "cross_attention"
@@ -218,13 +218,13 @@ class ComponentKnowledgeBase:
                 # This prevents false positives like "gated cross attention" matching "cross attention"
                 if len(comp_key) > 4 and comp_key in name_norm and comp_key != name_norm:
                     return comp
-        
+
         if kind and len(kind) > 8:
             kind_norm = self._normalize_key(kind)
             for comp_key, comp in self.components.items():
                 if len(comp_key) > 4 and comp_key in kind_norm and comp_key != kind_norm:
                     return comp
-        
+
         return None
 
     def get_all_components(self) -> list[ComponentKnowledge]:
@@ -246,22 +246,22 @@ class ComponentKnowledgeBase:
         """
         query_norm = self._normalize_key(query)
         matches = []
-        
+
         for comp in self.components.values():
             # Check name
             if query_norm in self._normalize_key(comp.name):
                 matches.append(comp)
                 continue
-            
+
             # Check aliases
             if any(query_norm in self._normalize_key(alias) for alias in comp.aliases):
                 matches.append(comp)
                 continue
-            
+
             # Check definition
             if query_norm in self._normalize_key(comp.definition):
                 matches.append(comp)
-        
+
         return matches
 
 

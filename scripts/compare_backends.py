@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 from arpa.agents import DatasetAgent
-from arpa.core.state import DatasetDescription
+from arpa.agents.extraction_agent import ExtractionAgent
+from arpa.core.state import DatasetDescription, MethodologySpec
 
 
 def run_backend(backend: str, paper_path: Path | None, dataset_desc: DatasetDescription | None):
@@ -18,14 +19,21 @@ def run_backend(backend: str, paper_path: Path | None, dataset_desc: DatasetDesc
     
     start = time.time()
     try:
-        agent = DatasetAgent(backend=backend)
-        
         paper_context = paper_path.read_text(encoding="utf-8") if paper_path else None
         
+        # Build methodology
+        methodology = None
+        if paper_context:
+            print(f"  Running ExtractionAgent...")
+            extraction_agent = ExtractionAgent(backend=backend)
+            methodology = extraction_agent.run(paper_context, reduce_first=True)
+        elif dataset_desc:
+            methodology = MethodologySpec(dataset_description=dataset_desc)
+        
+        print(f"  Running DatasetAgent...")
+        agent = DatasetAgent(backend=backend)
         result = agent.run(
-            paper_context=paper_context,
-            dataset_description=dataset_desc,
-            use_llm_extraction=paper_context is not None,
+            methodology=methodology,
             use_docker=False,  # Skip docker for speed comparison
         )
         elapsed = time.time() - start

@@ -20,9 +20,10 @@ caller can surface an actionable escalation reason instead of silently failing.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Callable, Literal
+from typing import Literal
 
 import httpx
 from loguru import logger

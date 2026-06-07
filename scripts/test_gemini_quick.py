@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from arpa.agents import DatasetAgent
+from arpa.agents.extraction_agent import ExtractionAgent
 
 
 def main():
@@ -15,10 +16,19 @@ def main():
     print("GEMINI EXTRACTION TEST - CIFAR-10 Paper")
     print("="*70)
     
+    # Step 1: Extract methodology
+    print("\n[1/2] Running ExtractionAgent...")
+    extraction_agent = ExtractionAgent(backend="gemini")
+    methodology = extraction_agent.run(paper_text, reduce_first=True)
+    
+    if methodology.dataset_description:
+        print(f"  ✓ Extracted dataset: {methodology.dataset_description.name}")
+    
+    # Step 2: Resolve dataset and generate loading code
+    print("\n[2/2] Running DatasetAgent...")
     agent = DatasetAgent(backend="gemini")
     result = agent.run(
-        paper_context=paper_text,
-        use_llm_extraction=True,
+        methodology=methodology,
         use_docker=False,  # Skip verification to focus on extraction quality
     )
     

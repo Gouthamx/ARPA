@@ -89,7 +89,7 @@ class ExtractedDatasetInfo(BaseModel):
         description="Any extra grounding detail; null if none",
     )
 
-    def to_description(self, raw_context: str | None = None) -> "DatasetDescription":
+    def to_description(self, raw_context: str | None = None) -> DatasetDescription:
         """Project the extracted facts onto the agent's DatasetDescription."""
         transform_desc = None
         if self.preprocess_steps:

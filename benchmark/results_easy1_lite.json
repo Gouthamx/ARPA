@@ -1,0 +1,76 @@
+[
+  {
+    "key": "easy1",
+    "level": "easy",
+    "score": 85,
+    "max_score": 85,
+    "elapsed_s": 8.06,
+    "extracted_name": "Fashion-MNIST",
+    "registry": "torchvision/fashion_mnist",
+    "verified": false,
+    "escalated": false,
+    "error": null,
+    "fields": [
+      {
+        "name": "dataset",
+        "expected": "fashion-mnist|fashion mnist|fashionmnist",
+        "actual": "Fashion-MNIST -> torchvision/fashion_mnist",
+        "points": 40,
+        "max_points": 40,
+        "scored": true
+      },
+      {
+        "name": "num_classes",
+        "expected": [
+          10
+        ],
+        "actual": "10",
+        "points": 12,
+        "max_points": 12,
+        "scored": true
+      },
+      {
+        "name": "train_size",
+        "expected": [
+          60000
+        ],
+        "actual": "60000",
+        "points": 12,
+        "max_points": 12,
+        "scored": true
+      },
+      {
+        "name": "test_size",
+        "expected": [
+          10000
+        ],
+        "actual": "10000",
+        "points": 8,
+        "max_points": 8,
+        "scored": true
+      },
+      {
+        "name": "input_shape",
+        "expected": [
+          [
+            1,
+            28,
+            28
+          ]
+        ],
+        "actual": "[1, 28, 28]",
+        "points": 13,
+        "max_points": 13,
+        "scored": true
+      },
+      {
+        "name": "steps",
+        "expected": [],
+        "actual": "[]",
+        "points": 0.0,
+        "max_points": 15,
+        "scored": false
+      }
+    ]
+  }
+]

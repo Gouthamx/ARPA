@@ -72,7 +72,7 @@ class DatasetMetadata:
         train_size: int | None,
         val_size: int | None,
         test_size: int | None,
-    ) -> "DatasetMetadata":
+    ) -> DatasetMetadata:
         """Fill any field still missing using paper-extracted values."""
         for fld, val in (
             ("num_classes", num_classes),
@@ -117,9 +117,7 @@ def _parse_hf_info(card_data: dict) -> tuple[int | None, dict[str, int]]:
         dtype = feature.get("dtype")
         if isinstance(dtype, dict) and "class_label" in dtype:
             names = dtype["class_label"].get("names")
-            if isinstance(names, dict):
-                num_classes = len(names)
-            elif isinstance(names, list):
+            if isinstance(names, dict) or isinstance(names, list):
                 num_classes = len(names)
             break
 

@@ -19,7 +19,7 @@ from typing import Any, TypeVar
 from loguru import logger
 from pydantic import BaseModel
 
-from arpa.core.confidence import ConfidenceField, ConfidenceLevel
+from arpa.core.confidence import ConfidenceField
 from arpa.core.config import ARPASettings, get_settings
 from arpa.core.state import (
     ArchitecturePass,
@@ -191,11 +191,11 @@ class ExtractionAgent:
             ("implementation/codegen", ImplementationPlanPass, _PASS4_PROMPT),
         ):
             partial = self._extract_pass(label, schema, prompt, context)
-            
+
             # RAG enrichment: add KB definitions for architecture components
             if label == "architecture" and isinstance(partial, ArchitecturePass):
                 partial = self._enrich_architecture_with_kb(partial)
-            
+
             partials.append(partial)
 
         spec = self._merge_passes(partials)
@@ -488,14 +488,14 @@ class ExtractionAgent:
         """
         if not arch_pass.architecture or not arch_pass.architecture.components:
             return arch_pass
-        
+
         enriched_count = 0
-        
+
         for component in arch_pass.architecture.components:
             # Skip if component already has detailed parameters
             if component.parameters and len(component.parameters) > 2:
                 continue
-            
+
             # Try KB lookup by name and kind
             try:
                 kb_entry = self.kb.lookup_component(component.name, component.kind)
@@ -518,7 +518,7 @@ class ExtractionAgent:
                         )
                     )
                     enriched_count += 1
-                    
+
                     logger.debug(
                         "KB enrichment: '{}' → {} ({})",
                         component.name,
@@ -532,14 +532,14 @@ class ExtractionAgent:
                     component.name,
                     exc,
                 )
-        
+
         if enriched_count > 0:
             logger.info(
                 "Knowledge base enriched {}/{} architecture components",
                 enriched_count,
                 len(arch_pass.architecture.components),
             )
-        
+
         return arch_pass
 
 
