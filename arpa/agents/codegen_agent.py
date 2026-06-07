@@ -123,9 +123,7 @@ class CodeGenAgent:
     ) -> None:
         self.settings = settings or get_settings()
         self.llm = llm or get_llm_client(self.settings, backend=backend)
-        # Use the code model from settings
-        self.code_model = self.settings.gemini_code_model if backend != "ollama" else self.settings.ollama_code_model
-        logger.info("CodeGenAgent initialized with code_model: {}", self.code_model)
+        logger.info("CodeGenAgent initialized with code_model: {}", self.llm.code_model)
 
     def run(
         self,
@@ -178,7 +176,7 @@ class CodeGenAgent:
             if train_file:
                 result.files.append(train_file)
 
-            # 2. Write files if output_dir provided
+            # 3. Write files if output_dir provided
             if output_dir:
                 self._write_files(result.files, Path(output_dir))
 
@@ -212,7 +210,6 @@ class CodeGenAgent:
 
         # Check if this is a benchmark paper
         is_benchmark = (
-            hasattr(methodology, 'benchmark_experiments') and
             methodology.benchmark_experiments and
             len(methodology.benchmark_experiments) > 0
         )
@@ -257,7 +254,7 @@ class CodeGenAgent:
                     {"role": "system", "content": CODEGEN_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                model=self.code_model,
+                model=self.llm.code_model,
                 format_json=True,
             )
             data = self.llm.extract_json(raw)
@@ -347,7 +344,7 @@ Return JSON: {{"code": "complete Python code as string"}}
                     {"role": "system", "content": CODEGEN_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                model=self.code_model,
+                model=self.llm.code_model,
                 format_json=True,
             )
             data = self.llm.extract_json(raw)
@@ -398,7 +395,6 @@ Return JSON: {{"code": "complete Python code as string"}}
 
         # Check if this is a benchmark paper
         is_benchmark = (
-            hasattr(methodology, 'benchmark_experiments') and
             methodology.benchmark_experiments and
             len(methodology.benchmark_experiments) > 0
         )
@@ -467,7 +463,7 @@ Return JSON: {{"code": "complete Python code as string"}}
                     {"role": "system", "content": CODEGEN_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                model=self.code_model,
+                model=self.llm.code_model,
                 format_json=True,
             )
             data = self.llm.extract_json(raw)
@@ -551,7 +547,7 @@ Return JSON: {{"code": "complete Python code as string"}}
                     {"role": "system", "content": CODEGEN_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                model=self.code_model,
+                model=self.llm.code_model,
                 format_json=True,
             )
             data = self.llm.extract_json(raw)

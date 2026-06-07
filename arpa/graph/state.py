@@ -22,6 +22,8 @@ class ARPAState(TypedDict, total=False):
     # ========== Input ==========
     paper_text: str  # Full paper text or reduced sections
     paper_path: str | None  # Original PDF/txt path for reference
+    backend: str | None  # LLM backend to use ("gemini" | "ollama")
+    use_docker: bool  # Whether to use Docker for dataset verification
     
     # ========== Extraction Phase ==========
     methodology: MethodologySpec | None  # Output from ExtractionAgent

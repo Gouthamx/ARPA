@@ -25,9 +25,6 @@ env/
 *.pem
 *.key
 
-# Documentation (keep local; not uploaded)
-*.md
-
 # IDE / OS
 .idea/
 .vscode/

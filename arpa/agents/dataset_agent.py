@@ -22,7 +22,7 @@ from arpa.core.state import (
     MethodologySpec,
     PreprocessStep,
 )
-from arpa.models import LLMClient, OllamaClient, get_llm_client
+from arpa.models import LLMClient, get_llm_client
 from arpa.tools.dataset_metadata import DatasetMetadataResolver
 from arpa.tools.dataset_tools import DatasetResolver, build_loading_code_skeleton
 from arpa.tools.docker_tools import DatasetSandboxVerifier, VerificationExpectations
@@ -101,7 +101,6 @@ class DatasetAgent:
     def __init__(
         self,
         settings: ARPASettings | None = None,
-        ollama: OllamaClient | None = None,
         resolver: DatasetResolver | None = None,
         verifier: DatasetSandboxVerifier | None = None,
         *,
@@ -112,17 +111,9 @@ class DatasetAgent:
         self.settings = settings or get_settings()
         # Backend selection priority:
         #   1. explicit `llm` client
-        #   2. legacy `ollama` client argument (back-compat)
-        #   3. `backend` override ("ollama" | "gemini")
-        #   4. settings.llm_backend
-        if llm is not None:
-            self.llm = llm
-        elif ollama is not None:
-            self.llm = ollama
-        else:
-            self.llm = get_llm_client(self.settings, backend=backend)
-        # Keep `self.ollama` as an alias for backward compatibility.
-        self.ollama = self.llm
+        #   2. `backend` override ("ollama" | "gemini")
+        #   3. settings.llm_backend
+        self.llm = llm or get_llm_client(self.settings, backend=backend)
         self.resolver = resolver or DatasetResolver()
         # Dynamic property resolver from live registries.
         self.metadata_resolver = metadata_resolver or DatasetMetadataResolver()
