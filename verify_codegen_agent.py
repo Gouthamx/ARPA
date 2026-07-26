@@ -446,6 +446,54 @@ def test_paper(
     return result
 
 
+def resolve_models(settings, backend: str) -> tuple[str | None, str | None]:
+    """Return the (general, code) model names the run will actually use."""
+    pairs = {
+        "nvidia": ("nvidia_general_model", "nvidia_code_model"),
+        "gemini": ("gemini_general_model", "gemini_code_model"),
+        "openrouter": ("openrouter_general_model", "openrouter_code_model"),
+        "ollama": ("ollama_general_model", "ollama_code_model"),
+        "groq": ("groq_model", "groq_model"),
+    }.get(backend)
+    if not pairs:
+        return None, None
+    return getattr(settings, pairs[0], None), getattr(settings, pairs[1], None)
+
+
+# Rough minutes per paper. A paper costs ~8 LLM calls: 4 extraction passes,
+# ~2 dataset calls, and 2 code generations that request up to 8192 tokens and
+# are by far the slowest. These numbers come from measured NVIDIA NIM runs
+# (~95s per extraction call on llama-3.3-70b), not from guesswork -- an
+# earlier flat "2 minutes per paper" estimate was off by roughly 6x and made
+# a perfectly healthy run look like it had hung.
+_BIG_MODEL_MARKERS = ("70b", "72b", "405b", "120b", "large", "opus")
+
+
+def _is_big(model: str | None) -> bool:
+    return any(marker in (model or "").lower() for marker in _BIG_MODEL_MARKERS)
+
+
+def estimate_minutes_per_paper(
+    backend: str, general_model: str | None, code_model: str | None
+) -> float:
+    """Price the two model roles separately.
+
+    They are genuinely independent: extraction and dataset work run on
+    general_model (~6 calls) while the two long code generations run on
+    code_model. Charging one flat rate for the pair would hide the most useful
+    tuning lever there is -- a small general_model with a large code_model
+    cuts most of the wall-clock cost without giving up code quality.
+    """
+    if backend == "ollama":
+        return 17.0
+    # 4 extraction passes + ~2 dataset calls, on general_model.
+    general_cost = 8.3 if _is_big(general_model) else 2.0
+    # 2 generations requesting up to 8192 tokens, on code_model -- the
+    # slowest calls in the run by a wide margin.
+    code_cost = 6.0 if _is_big(code_model) else 1.3
+    return round(general_cost + code_cost, 1)
+
+
 def paper_passed(r: dict) -> bool:
     """A paper passes when the pipeline ran end to end AND the code compiles."""
     return bool(
@@ -650,13 +698,23 @@ def main() -> None:
     print("Stage timeouts  : " + ", ".join(f"{k}={v}s" for k, v in STAGE_TIMEOUTS.items()))
     print(f"Retries / stage : {STAGE_RETRIES}")
 
-    if backend == "ollama":
-        est = len(papers_to_test) * 17
-        print(f"\n!  Ollama is slow: roughly {est} min ({est / 60:.1f} h) for this run.")
-        print("   Consider --quick, or a cloud backend such as --backend nvidia.")
-    else:
-        est = len(papers_to_test) * 2
-        print(f"Estimated time  : ~{est} minutes")
+    general_model, code_model = resolve_models(settings, backend)
+    if general_model or code_model:
+        # Always show the models actually in use. A config bug once made the
+        # client silently ignore the .env model settings and fall back to a
+        # hardcoded default, so the run and the config disagreed with nobody
+        # the wiser. Printing the resolved values makes that failure obvious.
+        print(f"Models          : general={general_model}  code={code_model}")
+
+    per_paper = estimate_minutes_per_paper(backend, general_model, code_model)
+    est = len(papers_to_test) * per_paper
+    print(f"Estimated time  : ~{est:.0f} min ({est / 60:.1f} h), "
+          f"about {per_paper:.0f} min/paper")
+
+    if per_paper >= 10:
+        print("   Large models on a shared/free tier take 1.5-2 min per LLM call,")
+        print("   and each paper needs roughly 8 of them. Progress is saved after")
+        print("   every paper -- Ctrl+C is safe, re-run without --fresh to resume.")
     print("")
 
     # -- Resume from prior progress -----------------------------------------
