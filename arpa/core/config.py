@@ -48,8 +48,11 @@ class ARPASettings(BaseSettings):
 
     # NVIDIA NIM (free access to 100+ models)
     nvidia_api_key: str | None = None
-    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_base_url: str = "https://integrate.api.nvidia.com"
+    nvidia_general_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_code_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_timeout_s: float = 300.0
+    nvidia_max_retries: int = 2
 
     # Groq (fast, free, 30 req/min)
     groq_api_key: str | None = None

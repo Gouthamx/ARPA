@@ -49,13 +49,28 @@ class NvidiaClient:
         # Call counter for unique IDs
         self.call_counter = 0
 
+    # Read the real settings fields so ARPA_NVIDIA_GENERAL_MODEL /
+    # ARPA_NVIDIA_CODE_MODEL in .env are actually honoured. These previously
+    # looked up a "nvidia_model" field that does not exist on ARPASettings, so
+    # getattr silently fell through to the hardcoded default and every .env
+    # model override was ignored -- the config said one thing and the client
+    # did another. `nvidia_model` is still accepted as a fallback so an older
+    # .env that sets it keeps working.
     @property
     def general_model(self) -> str:
-        return getattr(self.settings, "nvidia_model", "meta/llama-3.3-70b-instruct")
+        return (
+            getattr(self.settings, "nvidia_general_model", None)
+            or getattr(self.settings, "nvidia_model", None)
+            or "meta/llama-3.3-70b-instruct"
+        )
 
     @property
     def code_model(self) -> str:
-        return getattr(self.settings, "nvidia_model", "meta/llama-3.3-70b-instruct")
+        return (
+            getattr(self.settings, "nvidia_code_model", None)
+            or getattr(self.settings, "nvidia_model", None)
+            or "meta/llama-3.3-70b-instruct"
+        )
 
     def generate(
         self,
@@ -129,7 +144,7 @@ class NvidiaClient:
             
             payload["messages"] = messages
         
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self.base_url}/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
