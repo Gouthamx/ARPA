@@ -299,7 +299,7 @@ def main():
         settings.llm_backend = args.backend
     
     papers_dir = Path("papers")
-    output_dir = Path(".arpa_runs") / "codegen_verification"
+    output_dir = Path("verification_results")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.fresh:
