@@ -1,0 +1,154 @@
+# Standard activation function definitions
+
+relu:
+  aliases:
+    - "rectified linear unit"
+    - "rectified linear"
+  definition: "Element-wise activation function: ReLU(x) = max(0, x)"
+  canonical_implementation: "torch.nn.ReLU"
+  parameters:
+    inplace: "Whether to do the operation in-place (default: False)"
+  pytorch_signature: "ReLU(inplace=False)"
+  forward_pass: "output = max(0, input)"
+  reference: "Nair & Hinton, Rectified Linear Units, 2010"
+  confidence_when_used: "inferred"
+  domain_default: "most common activation in CNNs and feedforward networks"
+
+leaky_relu:
+  aliases:
+    - "leakyrelu"
+    - "leaky rectified linear unit"
+  definition: "ReLU variant with small negative slope: LeakyReLU(x) = max(0, x) + negative_slope * min(0, x)"
+  canonical_implementation: "torch.nn.LeakyReLU"
+  parameters:
+    negative_slope: "Slope for negative values (default: 0.01)"
+    inplace: "Whether to do the operation in-place (default: False)"
+  pytorch_signature: "LeakyReLU(negative_slope=0.01, inplace=False)"
+  forward_pass: "output = x if x > 0 else negative_slope * x"
+  reference: "Maas et al., Rectifier Nonlinearities Improve Neural Network Acoustic Models, 2013"
+  confidence_when_used: "inferred"
+
+prelu:
+  aliases:
+    - "parametric relu"
+    - "parametric rectified linear unit"
+  definition: "Learnable variant of LeakyReLU where the negative slope is a learned parameter"
+  canonical_implementation: "torch.nn.PReLU"
+  parameters:
+    num_parameters: "Number of learnable parameters (default: 1, can be num_channels for channel-wise)"
+    init: "Initial value for learnable weight (default: 0.25)"
+  pytorch_signature: "PReLU(num_parameters=1, init=0.25)"
+  forward_pass: "output = x if x > 0 else learned_weight * x"
+  reference: "He et al., Delving Deep into Rectifiers, 2015"
+  paper_url: "https://arxiv.org/abs/1502.01852"
+  confidence_when_used: "inferred"
+
+gelu:
+  aliases:
+    - "gaussian error linear unit"
+  definition: "Smooth activation function: GELU(x) = x * Φ(x) where Φ is Gaussian CDF"
+  canonical_implementation: "torch.nn.GELU"
+  parameters:
+    approximate: "Approximation method ('none' for exact, 'tanh' for approximation) (default: 'none')"
+  pytorch_signature: "GELU(approximate='none')"
+  forward_pass: "output = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))) [approximate] or x * Φ(x) [exact]"
+  reference: "Hendrycks & Gimpel, Gaussian Error Linear Units, 2016"
+  paper_url: "https://arxiv.org/abs/1606.08415"
+  confidence_when_used: "inferred"
+  domain_default: "transformers and modern NLP models (BERT, GPT)"
+
+swish:
+  aliases:
+    - "silu"
+    - "sigmoid linear unit"
+    - "self-gated"
+  definition: "Smooth activation function: Swish(x) = x * sigmoid(x)"
+  canonical_implementation: "torch.nn.SiLU"
+  parameters: {}
+  pytorch_signature: "SiLU()"
+  forward_pass: "output = x * sigmoid(x) = x / (1 + exp(-x))"
+  reference: "Ramachandran et al., Searching for Activation Functions, 2017 / Elfwing et al., 2017"
+  paper_url: "https://arxiv.org/abs/1710.05941"
+  confidence_when_used: "inferred"
+  domain_default: "EfficientNet and modern vision models"
+
+elu:
+  aliases:
+    - "exponential linear unit"
+  definition: "Smooth activation: ELU(x) = x if x > 0 else alpha * (exp(x) - 1)"
+  canonical_implementation: "torch.nn.ELU"
+  parameters:
+    alpha: "Scale for negative saturation (default: 1.0)"
+    inplace: "Whether to do the operation in-place (default: False)"
+  pytorch_signature: "ELU(alpha=1.0, inplace=False)"
+  forward_pass: "output = x if x > 0 else alpha * (exp(x) - 1)"
+  reference: "Clevert et al., Fast and Accurate Deep Network Learning by ELU, 2015"
+  paper_url: "https://arxiv.org/abs/1511.07289"
+  confidence_when_used: "inferred"
+
+sigmoid:
+  aliases:
+    - "logistic"
+    - "logistic function"
+  definition: "Maps input to (0, 1): sigmoid(x) = 1 / (1 + exp(-x))"
+  canonical_implementation: "torch.nn.Sigmoid"
+  parameters: {}
+  pytorch_signature: "Sigmoid()"
+  forward_pass: "output = 1 / (1 + exp(-input))"
+  reference: "Classical activation function"
+  confidence_when_used: "inferred"
+  domain_default: "binary classification output layer"
+
+tanh:
+  aliases:
+    - "hyperbolic tangent"
+  definition: "Maps input to (-1, 1): tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))"
+  canonical_implementation: "torch.nn.Tanh"
+  parameters: {}
+  pytorch_signature: "Tanh()"
+  forward_pass: "output = tanh(input) = (exp(input) - exp(-input)) / (exp(input) + exp(-input))"
+  reference: "Classical activation function"
+  confidence_when_used: "inferred"
+  domain_default: "RNNs and LSTMs"
+
+softmax:
+  aliases:
+    - "soft max"
+    - "normalized exponential"
+  definition: "Converts logits to probability distribution: softmax(x_i) = exp(x_i) / sum(exp(x_j))"
+  canonical_implementation: "torch.nn.Softmax"
+  parameters:
+    dim: "Dimension along which to apply softmax (required)"
+  pytorch_signature: "Softmax(dim)"
+  forward_pass: "output[i] = exp(input[i]) / sum_j(exp(input[j]))"
+  reference: "Standard output activation for multi-class classification"
+  confidence_when_used: "inferred"
+  domain_default: "multi-class classification output layer"
+
+mish:
+  aliases:
+    - "mish activation"
+  definition: "Smooth activation: Mish(x) = x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))"
+  canonical_implementation: "torch.nn.Mish or custom"
+  parameters:
+    inplace: "Whether to do the operation in-place (default: False)"
+  pytorch_signature: "Mish(inplace=False)"
+  forward_pass: "output = x * tanh(ln(1 + exp(x)))"
+  reference: "Misra, Mish: A Self Regularized Non-Monotonic Activation Function, 2019"
+  paper_url: "https://arxiv.org/abs/1908.08681"
+  confidence_when_used: "inferred"
+
+hardswish:
+  aliases:
+    - "hard swish"
+    - "h-swish"
+  definition: "Efficient approximation of Swish: HardSwish(x) = x * ReLU6(x + 3) / 6"
+  canonical_implementation: "torch.nn.Hardswish"
+  parameters:
+    inplace: "Whether to do the operation in-place (default: False)"
+  pytorch_signature: "Hardswish(inplace=False)"
+  forward_pass: "output = x * min(max(x + 3, 0), 6) / 6"
+  reference: "Howard et al., Searching for MobileNetV3, 2019"
+  paper_url: "https://arxiv.org/abs/1905.02244"
+  confidence_when_used: "inferred"
+  domain_default: "MobileNetV3 and efficient mobile architectures"

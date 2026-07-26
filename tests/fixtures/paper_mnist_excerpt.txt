@@ -1,0 +1,14 @@
+4. Experiments
+
+4.1 Dataset
+
+We train and evaluate on the MNIST handwritten digit dataset, which contains
+60,000 training images and 10,000 test images of size 28×28 in grayscale.
+Each image belongs to one of 10 digit classes (0–9).
+
+4.2 Model and Training
+
+We use a simple convolutional neural network with two convolutional layers
+followed by two fully connected layers. We train with the Adam optimizer,
+learning rate 0.001, batch size 64, for 10 epochs. Cross-entropy loss is used.
+We report classification accuracy on the test set.

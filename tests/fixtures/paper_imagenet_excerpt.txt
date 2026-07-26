@@ -1,0 +1,15 @@
+4. ImageNet Classification
+
+4.1 Dataset and Preprocessing
+
+We train on the ImageNet (ILSVRC-2012) dataset with 1.28 million training
+images and 50,000 validation images across 1000 classes. Input images are
+resized so the shorter side is 256 pixels, then a random 224×224 crop is taken
+for training. At test time we use a single 224×224 center crop. RGB channels
+are normalized with mean (0.485, 0.456, 0.406) and std (0.229, 0.224, 0.225).
+
+4.2 Training Configuration
+
+We optimize with SGD (momentum 0.9, weight decay 1e-4) for 90 epochs with
+batch size 256. Initial learning rate is 0.1, reduced by 10× when validation
+error plateaus. We report top-1 and top-5 error on the validation set.

@@ -1,0 +1,14 @@
+5. Experimental Setup
+
+5.1 Dataset
+
+All experiments use the Street View House Numbers (SVHN) dataset. SVHN contains
+32×32 RGB digit images with 73,257 training examples, 26,032 test examples,
+and an additional 531,131 extra training images. There are 10 classes (digits 0–9).
+
+5.2 Training Details
+
+We normalize pixel values to [0, 1] and train a ResNet-20 architecture for
+200 epochs with SGD (momentum 0.9, weight decay 5e-4). Initial learning rate is
+0.1, reduced by 10× at epochs 80 and 120. Batch size is 128. We report
+top-1 accuracy on the test split.

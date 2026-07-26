@@ -1,0 +1,106 @@
+# Standard pooling layer definitions
+
+max_pooling:
+  aliases:
+    - "maxpool"
+    - "max pool"
+    - "max pooling"
+    - "max pooling 2d"
+  definition: "Downsampling operation that takes the maximum value over a spatial window"
+  canonical_implementation: "torch.nn.MaxPool2d"
+  parameters:
+    kernel_size: "Size of the pooling window (required, int or tuple)"
+    stride: "Stride of the pooling operation (default: kernel_size)"
+    padding: "Zero-padding added to both sides (default: 0)"
+    dilation: "Spacing between kernel elements (default: 1)"
+    return_indices: "Whether to return the max indices (default: False)"
+    ceil_mode: "Whether to use ceil instead of floor for output shape (default: False)"
+  pytorch_signature: "MaxPool2d(kernel_size, stride=None, padding=0, dilation=1, return_indices=False, ceil_mode=False)"
+  forward_pass: "For each spatial window: output = max(input_window)"
+  reference: "Standard operation in CNNs, popularized by LeCun et al."
+  confidence_when_used: "inferred"
+
+average_pooling:
+  aliases:
+    - "avgpool"
+    - "avg pool"
+    - "average pool"
+    - "mean pooling"
+    - "avg pooling"
+  definition: "Downsampling operation that takes the average value over a spatial window"
+  canonical_implementation: "torch.nn.AvgPool2d"
+  parameters:
+    kernel_size: "Size of the pooling window (required, int or tuple)"
+    stride: "Stride of the pooling operation (default: kernel_size)"
+    padding: "Zero-padding added to both sides (default: 0)"
+    ceil_mode: "Whether to use ceil for output shape (default: False)"
+    count_include_pad: "Whether to include padding in the averaging calculation (default: True)"
+  pytorch_signature: "AvgPool2d(kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True)"
+  forward_pass: "For each spatial window: output = mean(input_window)"
+  reference: "Standard operation in CNNs"
+  confidence_when_used: "inferred"
+
+adaptive_average_pooling:
+  aliases:
+    - "adaptive avgpool"
+    - "adaptive avg pool"
+    - "adaptive average pool"
+    - "adaptive mean pooling"
+    - "global average pooling"
+    - "gap"
+  definition: "Pooling that outputs a fixed size regardless of input size by adapting kernel and stride"
+  canonical_implementation: "torch.nn.AdaptiveAvgPool2d"
+  parameters:
+    output_size: "Target output size (required, int or tuple, often (1,1) for global pooling)"
+  pytorch_signature: "AdaptiveAvgPool2d(output_size)"
+  forward_pass: "Automatically computes kernel_size and stride to produce output_size; then applies average pooling"
+  reference: "Widely used in modern CNNs, popularized by ResNet"
+  confidence_when_used: "inferred"
+  domain_default: "classifier head in modern CNNs (output_size=1 for global average pooling)"
+
+adaptive_max_pooling:
+  aliases:
+    - "adaptive maxpool"
+    - "adaptive max pool"
+    - "adaptive maximum pooling"
+    - "global max pooling"
+    - "gmp"
+  definition: "Max pooling that outputs a fixed size regardless of input size by adapting kernel and stride"
+  canonical_implementation: "torch.nn.AdaptiveMaxPool2d"
+  parameters:
+    output_size: "Target output size (required, int or tuple)"
+    return_indices: "Whether to return the max indices (default: False)"
+  pytorch_signature: "AdaptiveMaxPool2d(output_size, return_indices=False)"
+  forward_pass: "Automatically computes kernel_size and stride to produce output_size; then applies max pooling"
+  reference: "Used in CNNs where fixed output size is needed"
+  confidence_when_used: "inferred"
+
+global_average_pooling:
+  aliases:
+    - "gap"
+    - "global avg pooling"
+    - "global mean pooling"
+  definition: "Special case of adaptive average pooling with output_size=(1,1), reducing spatial dimensions to single value per channel"
+  canonical_implementation: "torch.nn.AdaptiveAvgPool2d(1)"
+  parameters:
+    output_size: "Always (1, 1)"
+  pytorch_signature: "AdaptiveAvgPool2d(1) or input.mean([2,3], keepdim=True)"
+  forward_pass: "output[b,c,0,0] = mean(input[b,c,:,:])"
+  reference: "Lin et al., Network In Network, 2013"
+  paper_url: "https://arxiv.org/abs/1312.4400"
+  confidence_when_used: "inferred"
+  domain_default: "modern CNNs as replacement for fully connected layers"
+
+global_max_pooling:
+  aliases:
+    - "gmp"
+    - "global max pool"
+    - "global maximum pooling"
+  definition: "Special case of adaptive max pooling with output_size=(1,1), taking maximum value across spatial dimensions per channel"
+  canonical_implementation: "torch.nn.AdaptiveMaxPool2d(1)"
+  parameters:
+    output_size: "Always (1, 1)"
+  pytorch_signature: "AdaptiveMaxPool2d(1) or input.max(dim=[2,3], keepdim=True)"
+  forward_pass: "output[b,c,0,0] = max(input[b,c,:,:])"
+  reference: "Used in CNNs for feature aggregation"
+  confidence_when_used: "inferred"

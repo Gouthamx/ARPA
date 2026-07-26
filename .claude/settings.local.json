@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python _repro_codegen.py)",
+      "Bash(python _repro_paper.py)"
+    ]
+  }
+}

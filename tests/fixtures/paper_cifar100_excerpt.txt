@@ -1,0 +1,14 @@
+3. Experiments
+
+3.1 CIFAR-100 Benchmark
+
+We evaluate on CIFAR-100, which consists of 60,000 32×32 color images in 100
+fine-grained classes, with 500 training and 100 test images per class. Images
+are normalized with per-channel mean and standard deviation.
+
+3.2 Data Augmentation and Training
+
+During training we apply random horizontal flip (p=0.5) and random crop with
+4-pixel padding. We train a Wide ResNet-28-10 for 200 epochs using SGD with
+Nesterov momentum 0.9, weight decay 5e-4, and batch size 128. Learning rate
+starts at 0.1 and follows a cosine schedule. We report top-1 accuracy.
