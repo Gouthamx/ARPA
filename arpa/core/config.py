@@ -45,18 +45,22 @@ class ARPASettings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_general_model: str = "google/gemini-2.0-flash-exp:free"
     openrouter_code_model: str = "google/gemini-2.0-flash-exp:free"
+    openrouter_timeout_s: float = 600.0
+    openrouter_max_retries: int = 2
 
     # NVIDIA NIM (free access to 100+ models)
     nvidia_api_key: str | None = None
     nvidia_base_url: str = "https://integrate.api.nvidia.com"
     nvidia_general_model: str = "meta/llama-3.3-70b-instruct"
     nvidia_code_model: str = "meta/llama-3.3-70b-instruct"
-    nvidia_timeout_s: float = 300.0
+    nvidia_timeout_s: float = 600.0
     nvidia_max_retries: int = 2
 
     # Groq (fast, free, 30 req/min)
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
+    groq_timeout_s: float = 600.0
+    groq_max_retries: int = 2
 
     # Dataset agent
     dataset_verify_max_retries: int = 3

@@ -80,6 +80,14 @@ class CodegenMissingDetail(BaseModel):
     )
 
 
+class PassFailure(BaseModel):
+    """Record of an extraction pass that raised an exception."""
+    
+    pass_label: str  # e.g. "dataset/task", "architecture", etc.
+    exception_type: str  # e.g. "TimeoutError", "httpx.ReadTimeout"
+    exception_message: str
+
+
 class ExtractedPreprocessStep(BaseModel):
     """A single preprocessing/augmentation step as extracted from paper text."""
 
@@ -782,7 +790,12 @@ class MethodologySpec(BaseModel):
     implementation: ImplementationSpec | None = None
     codegen_plan: CodegenPlanSpec | None = None
     assumptions_needed: list[CodegenMissingDetail] = Field(default_factory=list)
+    pass_failures: list[PassFailure] = Field(default_factory=list)
     extraction_notes: str | None = None
+    
+    def all_passes_failed(self) -> bool:
+        """Return True if all four extraction passes raised exceptions."""
+        return len(self.pass_failures) >= 4
 
     def confidence_fields(self) -> Iterable[ConfidenceField[Any]]:
         """Yield every confidence-stamped field in the methodology tree."""
@@ -860,6 +873,7 @@ __all__ = [
     "ImplementationSpec",
     "MethodologySpec",
     "ModelComponentSpec",
+    "PassFailure",
     "PreprocessStep",
     "TrainingEvalPass",
     "TrainingSpec",

@@ -97,6 +97,11 @@ TRANSIENT_ERROR_MARKERS = (
     "unavailable",
     "connection",
     "read operation",
+    # Total extraction wipeout: every pass raised, which means the backend is
+    # down/timing out rather than the paper being unparseable. Matched without
+    # the pass count, since the message embeds one ("All 4 extraction passes
+    # failed") and a count-specific marker would silently stop matching.
+    "extraction passes failed",
 )
 
 
@@ -354,7 +359,18 @@ def test_paper(
             methodology = run_stage("extraction", extraction_agent.run, paper_text)
 
             if not methodology or not methodology.dataset_description:
-                raise ValueError("extraction returned no dataset description")
+                # Say *why* it came back empty. A bare "no dataset description"
+                # reads like the paper was at fault when the real cause is
+                # usually failed passes, and it matches no transient marker, so
+                # it silently defeated the retry logic in run_stage().
+                detail = ""
+                failures = getattr(methodology, "pass_failures", None) or []
+                if failures:
+                    detail = " -- failed passes: " + "; ".join(
+                        f"{f.pass_label}: {f.exception_type}: {f.exception_message[:120]}"
+                        for f in failures
+                    )
+                raise ValueError(f"extraction returned no dataset description{detail}")
 
             result["extraction_success"] = True
             result["dataset_name"] = methodology.dataset_description.name
@@ -640,6 +656,19 @@ def main() -> None:
     output_dir = Path("verification_results")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Persist agent-level logs. The agents report failures through loguru to
+    # stderr; on the last run that stderr was never captured, so the actual API
+    # exception behind seven failed papers was simply gone by the time anyone
+    # looked. A file sink makes post-mortems possible without a re-run.
+    run_log_path = output_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    logger.add(
+        run_log_path,
+        level="DEBUG",
+        backtrace=True,
+        diagnose=False,  # keep API keys out of rendered frames
+        enqueue=True,    # stage threads log concurrently
+    )
+
     partial_results_path = output_dir / "partial_results.jsonl"
     if args.fresh and partial_results_path.exists():
         partial_results_path.unlink()
@@ -775,6 +804,7 @@ def main() -> None:
 
     print(f"\nReport            : {report_path}")
     print(f"Raw results       : {partial_results_path}")
+    print(f"Agent log         : {run_log_path}")
     print(f"Generated code    : {output_dir}/<paper>/generated/")
 
     raise SystemExit(0 if results and all(paper_passed(r) for r in results) else 1)

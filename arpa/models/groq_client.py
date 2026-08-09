@@ -73,12 +73,17 @@ class GroqClient:
         
         self._model = getattr(self.settings, "groq_model", "llama-3.3-70b-versatile")
         self._temperature = 0.1
-        self._timeout = 60
+        self._timeout_s = getattr(self.settings, "groq_timeout_s", 600.0)
         
         self.client = OpenAI(
             api_key=api_key,
             base_url=GROQ_BASE_URL,
-            timeout=httpx.Timeout(connect=10.0, read=180.0, write=10.0, pool=10.0),
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=self._timeout_s,
+                write=10.0,
+                pool=10.0
+            ),
         )
         
         # Use global rate limiter instead of per-instance tracking

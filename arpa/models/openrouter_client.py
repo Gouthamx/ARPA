@@ -128,7 +128,13 @@ class OpenRouterClient:
         
         for attempt in range(max_retries):
             try:
-                with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=180.0, write=10.0, pool=10.0)) as client:
+                timeout = httpx.Timeout(
+                    connect=10.0,
+                    read=self.settings.openrouter_timeout_s,
+                    write=10.0,
+                    pool=10.0
+                )
+                with httpx.Client(timeout=timeout) as client:
                     resp = client.post(url, headers=headers, json=payload)
                     resp.raise_for_status()
                     

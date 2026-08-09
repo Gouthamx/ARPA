@@ -28,6 +28,7 @@ from arpa.core.state import (
     DatasetTaskPass,
     ImplementationPlanPass,
     MethodologySpec,
+    PassFailure,
     TrainingEvalPass,
 )
 from arpa.knowledge import ComponentKnowledgeBase
@@ -212,14 +213,29 @@ class ExtractionAgent:
         """Return a codegen-focused methodology spec for the paper."""
         context = self._prepare_context(paper_text, reduce_first=reduce_first)
 
-        partials: list[BaseModel] = []
-        for label, schema, prompt in (
+        passes = (
             ("dataset/task", DatasetTaskPass, _PASS1_PROMPT),
             ("architecture", ArchitecturePass, _PASS2_PROMPT),
             ("training/eval", TrainingEvalPass, _PASS3_PROMPT),
             ("implementation/codegen", ImplementationPlanPass, _PASS4_PROMPT),
-        ):
+        )
+
+        partials: list[BaseModel] = []
+        failures: list[PassFailure] = []
+        first_exception: Exception | None = None
+
+        for label, schema, prompt in passes:
             partial = self._extract_pass(label, schema, prompt, context)
+
+            # Harvest the failure marker here, before any later step can hand
+            # back a different object and silently drop it. The real exception
+            # is carried alongside the record so it can be re-raised as the
+            # __cause__ without being reconstructed from its type name.
+            failure = getattr(partial, "_pass_failure", None)
+            if failure is not None:
+                failures.append(failure)
+                if first_exception is None:
+                    first_exception = getattr(partial, "_pass_exception", None)
 
             # RAG enrichment: add KB definitions for architecture components
             if label == "architecture" and isinstance(partial, ArchitecturePass):
@@ -228,6 +244,25 @@ class ExtractionAgent:
             partials.append(partial)
 
         spec = self._merge_passes(partials)
+        # Authoritative: collected above, so enrichment swapping an object out
+        # cannot cause a failed pass to go unrecorded.
+        spec.pass_failures = failures
+
+        # Every pass failing is an infrastructure fault (the API is down, timing
+        # out, or rejecting us), not a paper that happens to lack details.
+        # Returning a hollow spec here is what previously turned a dead backend
+        # into a misleading "paper had no dataset description" result, which
+        # also defeated caller-side retries. Raise so the cause is visible.
+        if len(failures) == len(passes):
+            summary = "; ".join(
+                f"{f.pass_label}: {f.exception_type}: {f.exception_message[:160]}"
+                for f in failures
+            )
+            message = f"All {len(passes)} extraction passes failed -- {summary}"
+            if first_exception is not None:
+                raise RuntimeError(message) from first_exception
+            raise RuntimeError(message)
+
         spec.benchmark_experiments = self._extract_benchmark_experiments(context)
         if spec.dataset_description and not spec.dataset_description.raw_context:
             spec.dataset_description.raw_context = context[:8000]
@@ -379,6 +414,13 @@ class ExtractionAgent:
             )
         except Exception as exc:
             logger.error("Methodology extraction pass '{}' failed: {}", label, exc)
+            # Record the failure for inspection by caller
+            failure = PassFailure(
+                pass_label=label,
+                exception_type=type(exc).__name__,
+                exception_message=str(exc),
+            )
+            # Also keep the existing CodegenMissingDetail for backward compatibility
             missing = CodegenMissingDetail(
                 field=label,
                 reason=f"{label} extraction failed",
@@ -386,20 +428,27 @@ class ExtractionAgent:
                 suggested_resolution="Retry extraction or inspect paper text manually.",
                 evidence=str(exc),
             )
-            if schema is DatasetTaskPass:
-                return schema(assumptions_needed=[missing])  # type: ignore[return-value]
-            if schema is ArchitecturePass:
-                return schema(assumptions_needed=[missing])  # type: ignore[return-value]
-            if schema is TrainingEvalPass:
-                return schema(assumptions_needed=[missing])  # type: ignore[return-value]
-            return schema(assumptions_needed=[missing])  # type: ignore[return-value]
+            # Hand back a placeholder so a single bad pass still degrades
+            # gracefully, but tag it so run() can tell "this pass blew up" from
+            # "the paper genuinely said nothing here". The live exception rides
+            # along too, so a total wipeout can be re-raised with its real
+            # __cause__ intact rather than a lossy reconstruction.
+            result = schema(assumptions_needed=[missing])
+            result._pass_failure = failure  # type: ignore[attr-defined]
+            result._pass_exception = exc  # type: ignore[attr-defined]
+            return result  # type: ignore[return-value]
 
     def _merge_passes(self, partials: list[BaseModel]) -> MethodologySpec:
         spec = MethodologySpec()
         notes: list[str] = []
         missing: list[CodegenMissingDetail] = []
+        pass_failures: list[PassFailure] = []
 
         for partial in partials:
+            # Collect any pass failure attached to this result
+            if hasattr(partial, '_pass_failure'):
+                pass_failures.append(partial._pass_failure)
+            
             if isinstance(partial, DatasetTaskPass):
                 spec.dataset_description = self._choose(spec.dataset_description, partial.dataset_description)
                 spec.evaluation = self._merge_model(spec.evaluation, partial.evaluation)
@@ -425,6 +474,7 @@ class ExtractionAgent:
                     notes.append(f"implementation/codegen: {partial.notes}")
 
         spec.assumptions_needed = self._dedupe_missing(missing)
+        spec.pass_failures = pass_failures
         spec.extraction_notes = "\n".join(notes) if notes else None
         return spec
 

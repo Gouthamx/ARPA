@@ -153,12 +153,14 @@ class NvidiaClient:
         # JSON extraction with minimal retry (just 1 attempt, no repair)
         max_retries = 1  # No retry - if JSON is malformed, fail fast
         last_content = None
-        
+        last_error: str | None = None
+
         for attempt in range(max_retries):
+            started_at = time.monotonic()
             try:
                 # Use global rate limiter
                 self.rate_limiter.wait()
-                
+
                 # Log the request
                 logger.info("=" * 80)
                 logger.info(f"NVIDIA API CALL - Attempt {attempt + 1}/{max_retries}")
@@ -173,7 +175,13 @@ class NvidiaClient:
                     logger.info(f"      Content: {content_preview}")
                 logger.info("-" * 80)
                 
-                with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=180.0, write=10.0, pool=10.0)) as client:
+                timeout = httpx.Timeout(
+                    connect=10.0,
+                    read=self.settings.nvidia_timeout_s,
+                    write=10.0,
+                    pool=10.0
+                )
+                with httpx.Client(timeout=timeout) as client:
                     resp = client.post(url, headers=headers, json=payload)
                     resp.raise_for_status()
                     
@@ -234,40 +242,67 @@ class NvidiaClient:
                         raise NvidiaError(f"Unexpected response: {data}")
                         
             except httpx.HTTPStatusError as exc:
-                body = exc.response.text[:500] if exc.response else ""
-                
+                body = exc.response.text[:500] if exc.response is not None else ""
+                status = exc.response.status_code if exc.response is not None else "?"
+                elapsed = time.monotonic() - started_at
+                last_error = f"HTTP {status} after {elapsed:.1f}s: {body or exc}"
+                logger.error(
+                    f"NVIDIA API FAILED | model={payload['model']} | status={status} "
+                    f"| elapsed={elapsed:.1f}s | body={body}"
+                )
+
                 # Handle rate limiting with exponential backoff
-                if exc.response and exc.response.status_code == 429:
+                if exc.response is not None and status == 429:
                     retry_after = exc.response.headers.get("Retry-After")
                     if retry_after:
                         wait_time = int(retry_after)
                     else:
                         # Exponential backoff: 10s, 20s, 40s
                         wait_time = 10 * (2 ** attempt)
-                    
-                    logger.warning(
-                        f"Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}"
-                    )
-                    time.sleep(wait_time)
-                    continue
-                
-                logger.error(f"HTTP error: {exc} {body}")
-                
-                # Don't retry on 404/401
-                if exc.response.status_code in (404, 401):
+
+                    # Only sleep if a further attempt actually remains.
+                    # max_retries is 1, so `continue` here used to fall straight
+                    # out of the loop into a generic "Failed after 1 attempts.
+                    # Last: None" -- burning the wait and discarding the fact
+                    # that we were rate limited at all.
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Rate limited (429). Waiting {wait_time}s before retry "
+                            f"{attempt + 1}/{max_retries}"
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    raise NvidiaError(
+                        f"Rate limited (429) and no retries remain: {body}"
+                    ) from exc
+
+                # Don't retry on 404/401 -- bad key or unknown model won't heal.
+                if status in (404, 401, 403):
                     raise NvidiaError(f"Request failed: {exc}\n{body}") from exc
-                
+
                 if attempt < max_retries - 1:
                     continue
-                raise NvidiaError(f"Request failed: {exc}") from exc
-                
+                raise NvidiaError(f"Request failed: {exc}\n{body}") from exc
+
             except Exception as exc:
-                logger.error(f"Error: {exc}")
+                elapsed = time.monotonic() - started_at
+                last_error = f"{type(exc).__name__} after {elapsed:.1f}s: {exc}"
+                # Name the exception type explicitly: a bare str() on
+                # httpx.ReadTimeout is empty, which is precisely how a wall of
+                # timeouts previously showed up as a blank, unattributable error.
+                logger.error(
+                    f"NVIDIA API FAILED | model={payload['model']} "
+                    f"| {type(exc).__name__} | elapsed={elapsed:.1f}s | {exc}"
+                )
                 if attempt < max_retries - 1:
                     continue
-                raise NvidiaError(f"Request failed: {exc}") from exc
-        
-        raise NvidiaError(f"Failed after {max_retries} attempts. Last: {last_content[:200] if last_content else 'None'}")
+                raise NvidiaError(f"Request failed: {last_error}") from exc
+
+        # Reached only when every attempt used `continue`. Report the last real
+        # error rather than a content-free "Last: None".
+        raise NvidiaError(
+            f"Failed after {max_retries} attempt(s). Last error: {last_error or 'unknown'}"
+        )
 
     def chat_structured(
         self,
