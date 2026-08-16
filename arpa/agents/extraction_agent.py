@@ -102,6 +102,11 @@ _PASS2_PROMPT = """Pass 2/4: extract architecture and model internals needed for
 
 Extract:
   - model name, architecture family, backbone, pretrained weights.
+    model_name is the NEURAL ARCHITECTURE the paper trains (e.g. "ResNet-50",
+    "DeiT-B", "Bilinear CNN") -- never the dataset or benchmark it runs on
+    (e.g. "EMNIST", "ImageNet", "Fashion-MNIST"). Dataset papers that only
+    benchmark off-the-shelf classifiers often name no architecture at all;
+    in that case leave model_name null rather than filling in the dataset.
   - layer/block/component structure, including convolution/kernel/stride/padding,
     pooling, normalization, activation, residual/skip connections, attention,
     classifier head, hidden dimensions, output dimensions.
@@ -131,7 +136,15 @@ _PASS3_PROMPT = """Pass 3/4: extract training and evaluation hyperparameters.
 
 Extract:
   - optimizer, learning rate, optimizer parameters/betas/momentum.
-  - batch size, epochs/steps, weight decay, scheduler and milestones/warmup.
+  - batch size, weight decay, scheduler and milestones/warmup.
+  - training duration. These are DIFFERENT units and must not be mixed:
+      * epochs         -> only when the paper counts passes over the dataset
+                          ("trained for 90 epochs").
+      * max_iterations -> when the paper counts iterations/steps/updates
+                          ("up to 60x10^4 iterations", "600k steps").
+    Record each only in its own field, and leave the other null. Expand
+    scientific notation to a plain integer (60x10^4 -> 600000). If the paper
+    gives only one of the two, do NOT convert or estimate the other.
   - loss function and loss parameters, label smoothing, class weights, temperature.
   - regularization, augmentation policies, mixed precision, gradient accumulation,
     gradient clipping, seed, checkpoint selection.
@@ -244,6 +257,7 @@ class ExtractionAgent:
             partials.append(partial)
 
         spec = self._merge_passes(partials)
+        self._drop_dataset_name_from_architecture(spec)
         # Authoritative: collected above, so enrichment swapping an object out
         # cannot cause a failed pass to go unrecorded.
         spec.pass_failures = failures
@@ -437,6 +451,41 @@ class ExtractionAgent:
             result._pass_failure = failure  # type: ignore[attr-defined]
             result._pass_exception = exc  # type: ignore[attr-defined]
             return result  # type: ignore[return-value]
+
+    @staticmethod
+    def _drop_dataset_name_from_architecture(spec: MethodologySpec) -> None:
+        """Clear architecture.model_name when it is really the dataset name.
+
+        The architecture pass sees the same reduced context as every other
+        pass -- heavily weighted toward dataset sections -- so on a paper that
+        introduces a dataset rather than a model it tends to answer the
+        question "what model?" with the only proper noun on offer: the dataset
+        (EMNIST, Fashion-MNIST). The prompt now says not to, but that is a
+        request, not a guarantee, and a wrong model_name is worse than an
+        absent one: CodeGenAgent will happily emit `class EMNIST(nn.Module)`
+        and look correct doing it. null is the honest answer here, and it
+        routes to the existing "architecture underspecified" handling.
+
+        Only exact (case/punctuation-insensitive) matches are dropped, so a
+        legitimately dataset-derived architecture name is left alone.
+        """
+        arch = spec.architecture
+        dataset = spec.dataset_description
+        if not arch or not dataset or not arch.model_name:
+            return
+
+        def norm(text: object) -> str:
+            return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+        model_name = getattr(arch.model_name, "value", arch.model_name)
+        dataset_names = [dataset.name, *(getattr(dataset, "aliases", None) or [])]
+        if norm(model_name) and norm(model_name) in {norm(n) for n in dataset_names if n}:
+            logger.warning(
+                "Dropping architecture.model_name={!r}: it is the dataset name, "
+                "not a model. Treating the architecture as unspecified.",
+                model_name,
+            )
+            arch.model_name = None
 
     def _merge_passes(self, partials: list[BaseModel]) -> MethodologySpec:
         spec = MethodologySpec()

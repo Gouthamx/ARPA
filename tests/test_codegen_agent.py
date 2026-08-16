@@ -418,3 +418,120 @@ class TestGenerateCodeFileDetectsRepetition:
         assert gen_file is not None
         assert gen_file.verified  # it's syntactically valid Python
         assert gen_file.quality_warnings  # but flagged as degenerate
+
+
+class TestSyntaxRepair:
+    """The self-repair loop: a file that fails compile() gets one repair
+    call with the exact SyntaxError fed back to the model before being
+    accepted or given up on."""
+
+    _BROKEN_MODEL_PY = (
+        "import torch.nn as nn\n\n"
+        "class Model(nn.Module)\n"  # missing colon -> SyntaxError
+        "    def forward(self, x):\n"
+        "        return x\n"
+    )
+
+    _FIXED_MODEL_PY = (
+        "import torch.nn as nn\n\n"
+        "class Model(nn.Module):\n"
+        "    def forward(self, x):\n"
+        "        return x\n"
+    )
+
+    def test_repairs_broken_code_on_syntax_error(self):
+        class RepairsOnSecondCallLLM:
+            general_model = "mock-general"
+            code_model = "mock-code"
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, messages, *, model=None, temperature=0.1, format_json=False):
+                self.calls += 1
+                code = (
+                    TestSyntaxRepair._BROKEN_MODEL_PY
+                    if self.calls == 1
+                    else TestSyntaxRepair._FIXED_MODEL_PY
+                )
+                return f"```python\n{code}```"
+
+        llm = RepairsOnSecondCallLLM()
+        agent = CodeGenAgent(llm=llm)
+        result = CodegenResult()
+        gen_file = agent._generate_code_file(
+            prompt="generate a model",
+            path="model.py",
+            purpose="test",
+            empty_warning="empty",
+            error_label="failed",
+            result=result,
+        )
+
+        assert llm.calls == 2  # original generation + one repair attempt
+        assert gen_file is not None
+        assert gen_file.verified
+        assert gen_file.syntax_errors == []
+        # _extract_code() strips the fenced block, so compare stripped forms
+        assert gen_file.content == TestSyntaxRepair._FIXED_MODEL_PY.strip()
+        assert any("Repaired syntax error in model.py" in msg for msg in result.generation_log)
+
+    def test_gives_up_cleanly_if_repair_also_fails(self):
+        class AlwaysBrokenLLM:
+            general_model = "mock-general"
+            code_model = "mock-code"
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, messages, *, model=None, temperature=0.1, format_json=False):
+                self.calls += 1
+                return f"```python\n{TestSyntaxRepair._BROKEN_MODEL_PY}```"
+
+        llm = AlwaysBrokenLLM()
+        agent = CodeGenAgent(llm=llm)
+        result = CodegenResult()
+        gen_file = agent._generate_code_file(
+            prompt="generate a model",
+            path="model.py",
+            purpose="test",
+            empty_warning="empty",
+            error_label="failed",
+            result=result,
+        )
+
+        assert llm.calls == 2  # still only one repair attempt, not a retry loop
+        assert gen_file is not None
+        assert not gen_file.verified
+        assert gen_file.syntax_errors  # original error preserved
+        # untouched, not corrupted (modulo the same strip() _extract_code() always applies)
+        assert gen_file.content == TestSyntaxRepair._BROKEN_MODEL_PY.strip()
+        assert any("Syntax repair did not fix model.py" in msg for msg in result.generation_log)
+
+    def test_verified_file_never_triggers_a_repair_call(self):
+        class CountingLLM:
+            general_model = "mock-general"
+            code_model = "mock-code"
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, messages, *, model=None, temperature=0.1, format_json=False):
+                self.calls += 1
+                return f"```python\n{TestSyntaxRepair._FIXED_MODEL_PY}```"
+
+        llm = CountingLLM()
+        agent = CodeGenAgent(llm=llm)
+        result = CodegenResult()
+        gen_file = agent._generate_code_file(
+            prompt="generate a model",
+            path="model.py",
+            purpose="test",
+            empty_warning="empty",
+            error_label="failed",
+            result=result,
+        )
+
+        assert llm.calls == 1  # no repair call needed
+        assert gen_file is not None
+        assert gen_file.verified

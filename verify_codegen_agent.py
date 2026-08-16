@@ -39,7 +39,9 @@ Time estimates:
 
 import argparse
 import json
+import logging
 import os
+import sys
 import threading
 import time
 import traceback
@@ -103,6 +105,40 @@ TRANSIENT_ERROR_MARKERS = (
     # failed") and a count-specific marker would silently stop matching.
     "extraction passes failed",
 )
+
+
+class InterceptHandler(logging.Handler):
+    """Redirect stdlib ``logging`` records into loguru.
+
+    ``nvidia_client.py`` and ``groq_client.py`` log through
+    ``logging.getLogger(__name__)`` (stdlib), not loguru -- two separate
+    systems that don't talk to each other. The loguru file sink added below
+    only ever saw loguru records, so every per-call diagnostic those two
+    clients emit (rate-limit waits, HTTP failure detail, elapsed time) was
+    silently dropped instead of landing in the run log. This handler, attached
+    to the stdlib root logger, forwards those records into loguru so they
+    reach the same sink as everything else.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # 6 frames up is where the original logger.warning()/.error() call
+        # site sits, above the fixed Logger.debug -> _log -> handle ->
+        # callHandlers -> Handler.handle -> this emit() chain that stdlib
+        # logging always goes through -- confirmed by testing against a
+        # simulated nvidia_client/groq_client call; a shallower depth (2)
+        # attributed everything to logging/__init__.py's callHandlers
+        # instead of the real caller.
+        frame, depth = sys._getframe(6), 6
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 class StageTimeout(Exception):
@@ -668,6 +704,15 @@ def main() -> None:
         diagnose=False,  # keep API keys out of rendered frames
         enqueue=True,    # stage threads log concurrently
     )
+    # Bridge stdlib logging (used by nvidia_client.py / groq_client.py) into
+    # loguru so the sink above actually captures their per-call diagnostics
+    # too, not just the higher-level pass/stage failures that already went
+    # through loguru directly. INFO rather than DEBUG/NOTSET: httpx and the
+    # openai SDK (Groq's client) also log through stdlib and are chatty at
+    # DEBUG, which would bury the arpa-specific detail this is meant to
+    # surface. force=True replaces any handler already on the root logger so
+    # this take effect regardless of import order.
+    logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
 
     partial_results_path = output_dir / "partial_results.jsonl"
     if args.fresh and partial_results_path.exists():

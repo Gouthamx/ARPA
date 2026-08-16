@@ -8,7 +8,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from arpa.core.confidence import ConfidenceField, ConfidenceLevel, ConfidenceSummary
-from arpa.models.schema_helpers import FlexibleStr, FlexibleInt, FlexibleFloat, FlexibleBool, FlexibleList
+from arpa.models.schema_helpers import (
+    FlexibleStr,
+    FlexibleInt,
+    FlexibleFloat,
+    FlexibleBool,
+    FlexibleList,
+    _is_null_token,
+    parse_stringified_list,
+    unwrap_confidence_field,
+)
 
 
 class DatasetDescription(BaseModel):
@@ -121,7 +130,7 @@ class ExtractedDatasetInfo(BaseModel):
     )
     split_description: str | None = None
     preprocess_steps: list[ExtractedPreprocessStep] = Field(default_factory=list)
-    notes: str | None = Field(
+    notes: FlexibleStr = Field(
         default=None,
         description="Any extra grounding detail; null if none",
     )
@@ -192,17 +201,59 @@ class ModelComponentSpec(BaseModel):
     evidence: str | None = None
     confidence: ConfidenceLevel | None = None  # Plain enum, not ConfidenceField
     
+    @field_validator('input_shape', 'output_shape', mode='before')
+    @classmethod
+    def parse_shape(cls, v):
+        """Accept a shape that arrived as a string, e.g. "[3, 224, 224]".
+
+        VGG's architecture pass produced nine of these in one response and
+        lost the whole extraction to them. Unwrap before parsing -- the string
+        is usually inside a confidence envelope, so parsing first would look
+        at a dict and do nothing.
+
+        A shape that is prose rather than numbers ("varies with input") is
+        dropped to None instead of raising: it carries no usable shape either
+        way, and this field is optional, so failing here would discard every
+        other correctly-extracted field in the pass to preserve a value we
+        could not have used.
+        """
+        v = unwrap_confidence_field(v)
+        if v is None:
+            return None
+        parsed = parse_stringified_list(v)
+        if isinstance(parsed, str):
+            return None
+        return parsed
+
     @field_validator('confidence', mode='before')
     @classmethod
     def unwrap_confidence(cls, v):
-        """If LLM returns ConfidenceField object, extract just the enum value."""
+        """If LLM returns ConfidenceField object, extract just the enum value.
+
+        Anything that is not a recognised level falls back to ASSUMED rather
+        than raising. Models occasionally misalign fields and put a component
+        description here -- MobileNetV2 sent confidence='224x224 conv2d' --
+        and passing that through to the enum failed the whole pass, discarding
+        all seven correctly-extracted components to preserve a value that was
+        never usable. ASSUMED is also the honest reading: a garbled confidence
+        marker is no evidence of confidence, and it is already the default for
+        a missing one.
+        """
         if v is None:
             return ConfidenceLevel.ASSUMED
         if isinstance(v, dict) and 'value' in v:
-            return v['value']
-        if hasattr(v, 'value'):
-            return v.value
-        return v
+            v = v['value']
+        elif isinstance(v, ConfidenceLevel):
+            return v
+        elif hasattr(v, 'value'):
+            v = v.value
+
+        if isinstance(v, ConfidenceLevel):
+            return v
+        try:
+            return ConfidenceLevel(v)
+        except (ValueError, TypeError):
+            return ConfidenceLevel.ASSUMED
 
 
 class ArchitectureSpec(BaseModel):
@@ -235,14 +286,35 @@ class ArchitectureSpec(BaseModel):
         3. List of plain strings
         4. List of ConfidenceField dicts (COMMON ERROR - unwrap each)
         5. List of ModelComponentSpec-like dicts (extract 'name' field from each)
+
+        Cases 3-5 are also reached when the list arrives already wrapped in a
+        ConfidenceField, which is what models actually return when the prompt
+        asks for confidence/evidence per field. That used to fall straight
+        through the "already a proper ConfidenceField" check below with a
+        list-of-dicts still sitting in `value`, and Pydantic then rejected it
+        against `list[str]` ("layers.value.0 Input should be a valid string").
+        Every architecture pass on a real paper died that way -- the model had
+        extracted the layers correctly (ResNet conv stacks, DeiT's
+        patch_embedding, SimCLR's augmentation module) and the spec was
+        discarded at the door, leaving CodeGenAgent to invent a generic CNN.
+        So unwrap the envelope first and normalize what's inside, rather than
+        trusting any dict that merely has a 'value' key.
         """
         if v is None:
             return None
-        
-        # Already a proper ConfidenceField dict
+
+        # ConfidenceField envelope: keep its provenance, but normalize the
+        # payload through the same list handling as a bare list.
         if isinstance(v, dict) and 'value' in v:
-            return v
-        
+            inner = v['value']
+            if inner is None or isinstance(inner, str) or not isinstance(inner, list):
+                normalized = cls.handle_layers(inner) if inner is not None else None
+                inner_value = normalized['value'] if isinstance(normalized, dict) else inner
+            else:
+                normalized = cls.handle_layers(inner)
+                inner_value = normalized['value'] if isinstance(normalized, dict) else inner
+            return {**v, 'value': inner_value}
+
         # List of items - check what kind
         if isinstance(v, list):
             # Empty list
@@ -353,14 +425,43 @@ class ArchitectureSpec(BaseModel):
             "replacement_logic": None
         }
     
-    @field_validator('layers', 'input_shape', mode='before')
+    @field_validator('input_shape', mode='before')
     @classmethod
     def wrap_plain_lists(cls, v):
-        """Auto-wrap plain lists into ConfidenceField objects."""
-        if v is None or isinstance(v, dict) or isinstance(v, ConfidenceField):
+        """Auto-wrap plain lists into ConfidenceField objects.
+
+        Parses a stringified shape ("[3, 224, 224]") first, at the top level
+        and inside an envelope -- wrapping without parsing just relocates the
+        string and it still fails `list[int]`.
+
+        Deliberately does NOT cover 'layers'. Pydantic v2 runs mode='before'
+        validators in reverse definition order, so this one (defined later)
+        ran *first* and wrapped a raw layers list into {'value': [...]},
+        after which handle_layers' early return for dicts skipped all of its
+        shape normalization -- making its list-of-component-dicts branch
+        unreachable and failing every real architecture extraction. handle_layers
+        does its own wrapping, so listing 'layers' here is both redundant and
+        actively harmful.
+        """
+        def as_shape(raw):
+            """Parsed list, or None when it is prose we cannot use.
+
+            Mirrors ModelComponentSpec.parse_shape: an unusable shape must not
+            cost the pass every other field it extracted.
+            """
+            parsed = parse_stringified_list(raw)
+            return None if isinstance(parsed, str) else parsed
+
+        if v is None:
+            return v
+        if isinstance(v, ConfidenceField):
+            return v
+        if isinstance(v, dict):
+            if "value" in v:
+                return {**v, "value": as_shape(v["value"])}
             return v
         return {
-            "value": v,
+            "value": as_shape(v),
             "confidence": "assumed",
             "source": "auto-wrapped from plain value",
             "evidence": None,
@@ -398,6 +499,13 @@ class TrainingSpec(BaseModel):
     learning_rate: ConfidenceField[float] | None = None
     batch_size: ConfidenceField[int] | None = None
     epochs: ConfidenceField[int] | None = None
+    # Iteration/step-based schedules need their own home. Plenty of papers
+    # never state epochs at all -- ResNet trains "for up to 60x10^4
+    # iterations" -- and with only `epochs` on offer the model put that count
+    # there, yielding epochs=60000 for a paper that names no epoch count and
+    # whose real figure is 600,000 iterations. Two different units silently
+    # sharing one field produces a training script off by orders of magnitude.
+    max_iterations: ConfidenceField[int] | None = None
     weight_decay: ConfidenceField[float] | None = None
     momentum: ConfidenceField[float] | None = None
     scheduler: ConfidenceField[str] | None = None
@@ -412,7 +520,13 @@ class TrainingSpec(BaseModel):
     mixed_precision: ConfidenceField[bool] | None = None
     gradient_accumulation_steps: ConfidenceField[int] | None = None
     checkpoint_selection: ConfidenceField[str] | None = None
-    notes: str | None = None
+    # FlexibleStr, not bare str: models wrap notes in a ConfidenceField as
+    # readily as any other field, and a plain `str` rejected that outright
+    # ("training.notes: Input should be a valid string, input_value={'value':
+    # 'None', 'confidence': 'assumed'}"), taking the entire training/eval pass
+    # down with it. Matches ArchitectureSpec.notes and EvaluationSpec.notes,
+    # which are already FlexibleStr.
+    notes: FlexibleStr = None
     
     @field_validator('optimizer', 'scheduler', 'loss_function', 'early_stopping', 'checkpoint_selection', mode='before')
     @classmethod
@@ -459,7 +573,8 @@ class TrainingSpec(BaseModel):
             "replacement_logic": None
         }
     
-    @field_validator('batch_size', 'epochs', 'seed', 'gradient_accumulation_steps', mode='before')
+    @field_validator('batch_size', 'epochs', 'max_iterations', 'seed',
+                     'gradient_accumulation_steps', mode='before')
     @classmethod
     def wrap_plain_ints(cls, v):
         """Auto-wrap plain integers into ConfidenceField objects."""
@@ -478,8 +593,22 @@ class TrainingSpec(BaseModel):
     @field_validator('mixed_precision', mode='before')
     @classmethod
     def wrap_plain_bools(cls, v):
-        """Auto-wrap plain booleans into ConfidenceField objects."""
-        if v is None or isinstance(v, dict) or isinstance(v, ConfidenceField):
+        """Auto-wrap plain booleans into ConfidenceField objects.
+
+        Also maps the string tokens models use for "absent" ("None", "N/A",
+        ...) onto a real None, at the top level and inside an envelope. A
+        literal 'None' string previously reached Pydantic's bool parser and
+        raised ("mixed_precision.value: Input should be a valid boolean,
+        input_value='None'"), which discarded DeiT's entire training/eval pass
+        over a field that simply wasn't stated in the paper.
+        """
+        if v is None or _is_null_token(v):
+            return None
+        if isinstance(v, ConfidenceField):
+            return None if _is_null_token(v.value) else v
+        if isinstance(v, dict):
+            if "value" in v and _is_null_token(v["value"]):
+                return None
             return v
         return {
             "value": v,
@@ -494,7 +623,14 @@ class TrainingSpec(BaseModel):
     @field_validator('optimizer_parameters', 'scheduler_parameters', mode='before')
     @classmethod
     def handle_none_dicts(cls, v):
-        """Convert None to empty dict and handle nested None values in dict."""
+        """Convert None to empty dict and handle nested None values in dict.
+
+        Values are `ConfidenceField[Any]`, so a plain entry like
+        `{"scheduler_type": "step"}` -- the natural way to answer, and what
+        models actually send -- failed as "scheduler_parameters.scheduler_type:
+        Input should be a valid dictionary or instance of ConfidenceField[Any]"
+        and cost the whole pass. Bare values are wrapped here instead.
+        """
         if v is None:
             return {}
         if not isinstance(v, dict):
@@ -502,30 +638,78 @@ class TrainingSpec(BaseModel):
         # Handle dict with None values - convert them to empty ConfidenceField-like dicts
         result = {}
         for key, val in v.items():
-            if val is None:
+            if val is None or _is_null_token(val):
                 # Skip None values entirely
                 continue
-            result[key] = val
+            if isinstance(val, ConfidenceField) or (isinstance(val, dict) and "value" in val):
+                result[key] = val
+                continue
+            result[key] = {
+                "value": val,
+                "confidence": "assumed",
+                "source": "auto-wrapped from plain value",
+                "evidence": None,
+                "alternatives": None,
+                "warning": None,
+                "replacement_logic": None,
+            }
         return result if result else {}
     
     @field_validator('regularization', 'augmentation_policy', mode='before')
     @classmethod
     def handle_none_lists(cls, v):
-        """Convert None to empty list, and unwrap ConfidenceField dicts to plain lists."""
+        """Convert None to empty list, and unwrap ConfidenceField dicts to plain lists.
+
+        These are `list[ConfidenceField[str]]` fields, but a model asked for a
+        single regularizer or augmentation policy naturally answers with one
+        value rather than a list -- as a bare scalar ("L2"), or wrapped
+        ("{'value': 'L2', 'confidence': 'confirmed'}"). Both used to be lost:
+        the wrapped form unwrapped straight to the scalar and then failed
+        Pydantic's list check ("Input should be a valid list, input_value='L2'"),
+        killing the whole training/eval pass on SimCLR and DeiT; the bare form
+        silently became [] further down, dropping a real extracted value
+        without any error at all. Scalars are now promoted to single-item
+        lists, which is what they mean.
+        """
+        def _as_element(item, envelope=None):
+            """Coerce one entry into a ConfidenceField-shaped dict.
+
+            The field is `list[ConfidenceField[str]]`, so a bare "L2" in the
+            list is just as invalid as a bare "L2" instead of the list --
+            both fail as `regularization.0`. Plain entries are therefore
+            wrapped, inheriting the outer envelope's provenance when they were
+            promoted out of one.
+            """
+            if isinstance(item, dict):
+                return item
+            base = {"confidence": "assumed", "source": "auto-wrapped from plain value"}
+            if envelope:
+                base = {k: val for k, val in envelope.items() if k != "value"} or base
+            return {**base, "value": item}
+
         # Handle None
         if v is None:
             return []
         # Handle ConfidenceField-wrapped dict {"value": [...], "confidence": ...}
         if isinstance(v, dict) and "value" in v:
             val = v["value"]
-            return val if val is not None else []
+            if val is None:
+                return []
+            # Preserve the envelope's provenance when promoting a lone scalar,
+            # so a confirmed value doesn't silently lose its evidence.
+            if not isinstance(val, list):
+                return [_as_element(val, envelope=v)]
+            return [_as_element(item, envelope=v) for item in val]
         # Handle plain dict that's not a ConfidenceField (like {"weight_decay": {...}})
         # This shouldn't be a list field, but LLM might structure it wrong - skip it
         if isinstance(v, dict) and "value" not in v:
             return []
         # Already a list
         if isinstance(v, list):
-            return v
+            return [_as_element(item) for item in v]
+        # Bare scalar ("L2") -- a single value, not an absent one.
+        if isinstance(v, (str, int, float)):
+            return [_as_element(v)]
         return []
 
 
@@ -653,7 +837,11 @@ class ImplementationSpec(BaseModel):
     # COMPLEX fields
     dependencies: list[str] | None = Field(default=None)
     reproducibility_notes: list[str] | None = Field(default=None)
-    notes: str | None = None
+    # FlexibleStr, not bare str -- see the note on TrainingSpec.notes. Models
+    # wrap `notes` in a ConfidenceField as readily as any other field, and on
+    # the four *Pass wrappers that meant one stray envelope failed the whole
+    # pass and discarded everything else it had extracted.
+    notes: FlexibleStr = None
     
     @field_validator('training_time', 'entrypoint_hint', mode='before')
     @classmethod
@@ -686,6 +874,26 @@ class CodegenFileSpec(BaseModel):
     required_symbols: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
 
+    @field_validator('required_symbols', 'depends_on', mode='before')
+    @classmethod
+    def none_means_empty(cls, v):
+        """Treat an explicit null as "nothing", which is what it means here.
+
+        The default_factory does not cover this: it applies when the key is
+        absent, and models send `"depends_on": null` for a file that depends
+        on nothing -- a perfectly reasonable answer that Pydantic rejects for
+        a `list[str]`. VGG's codegen plan died on exactly one such entry
+        ("codegen_plan.files.3.depends_on: Input should be a valid list,
+        input_value=None"), discarding the plan for all the other files with
+        it. A lone string is likewise promoted, since a single dependency is
+        as natural to write bare as in a list.
+        """
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        return v
+
 
 class CodegenPlanSpec(BaseModel):
     """Code generation plan inferred from the methodology.
@@ -711,7 +919,11 @@ class CodegenPlanSpec(BaseModel):
     files: list[CodegenFileSpec] = Field(default_factory=list)
     required_runtime_checks: list[str] = Field(default_factory=list)
     unsupported_reasons: list[str] = Field(default_factory=list)
-    notes: str | None = None
+    # FlexibleStr, not bare str -- see the note on TrainingSpec.notes. Models
+    # wrap `notes` in a ConfidenceField as readily as any other field, and on
+    # the four *Pass wrappers that meant one stray envelope failed the whole
+    # pass and discarded everything else it had extracted.
+    notes: FlexibleStr = None
     
     @field_validator('model_class_name', 'train_function_name', 'eval_function_name', mode='before')
     @classmethod
@@ -744,7 +956,11 @@ class DatasetTaskPass(BaseModel):
     dataset_description: DatasetDescription | None = None
     evaluation: EvaluationSpec | None = None
     assumptions_needed: list[CodegenMissingDetail] = Field(default_factory=list)
-    notes: str | None = None
+    # FlexibleStr, not bare str -- see the note on TrainingSpec.notes. Models
+    # wrap `notes` in a ConfidenceField as readily as any other field, and on
+    # the four *Pass wrappers that meant one stray envelope failed the whole
+    # pass and discarded everything else it had extracted.
+    notes: FlexibleStr = None
 
 
 class ArchitecturePass(BaseModel):
@@ -754,7 +970,11 @@ class ArchitecturePass(BaseModel):
     
     architecture: ArchitectureSpec | None = None
     assumptions_needed: list[CodegenMissingDetail] = Field(default_factory=list)
-    notes: str | None = None
+    # FlexibleStr, not bare str -- see the note on TrainingSpec.notes. Models
+    # wrap `notes` in a ConfidenceField as readily as any other field, and on
+    # the four *Pass wrappers that meant one stray envelope failed the whole
+    # pass and discarded everything else it had extracted.
+    notes: FlexibleStr = None
 
 
 class TrainingEvalPass(BaseModel):
@@ -765,7 +985,11 @@ class TrainingEvalPass(BaseModel):
     training: TrainingSpec | None = None
     evaluation: EvaluationSpec | None = None
     assumptions_needed: list[CodegenMissingDetail] = Field(default_factory=list)
-    notes: str | None = None
+    # FlexibleStr, not bare str -- see the note on TrainingSpec.notes. Models
+    # wrap `notes` in a ConfidenceField as readily as any other field, and on
+    # the four *Pass wrappers that meant one stray envelope failed the whole
+    # pass and discarded everything else it had extracted.
+    notes: FlexibleStr = None
 
 
 class ImplementationPlanPass(BaseModel):
@@ -776,7 +1000,11 @@ class ImplementationPlanPass(BaseModel):
     implementation: ImplementationSpec | None = None
     codegen_plan: CodegenPlanSpec | None = None
     assumptions_needed: list[CodegenMissingDetail] = Field(default_factory=list)
-    notes: str | None = None
+    # FlexibleStr, not bare str -- see the note on TrainingSpec.notes. Models
+    # wrap `notes` in a ConfidenceField as readily as any other field, and on
+    # the four *Pass wrappers that meant one stray envelope failed the whole
+    # pass and discarded everything else it had extracted.
+    notes: FlexibleStr = None
 
 
 class MethodologySpec(BaseModel):

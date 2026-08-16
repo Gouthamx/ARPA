@@ -23,6 +23,27 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+# Upper bound when growing the token budget after a truncated response. Stops
+# a pathological generation (a repetition loop, say) from escalating without
+# limit across retries.
+MAX_TOKENS_CEILING = 16384
+
+# Structured extraction previously inherited chat()'s 4096 default, which is
+# comfortable for most passes but not for an architecture pass on a paper with
+# many components -- each carries parameters plus confidence/source/evidence,
+# and DenseNet ran off the end mid-string. The failure mode was silent: the
+# truncated text simply failed to parse and the pass was recorded as bad JSON.
+#
+# Raised 8192 -> 12288 after a clean 10-paper run needed 13 truncation retries
+# to get there. The retry works, but it is the expensive way to buy the tokens:
+# each one discards a completed generation and pays for a second full pass,
+# and that run took roughly twice the wall-clock of its predecessor (~4250s vs
+# ~2400s). Asking for the headroom up front costs nothing extra when it goes
+# unused -- providers bill actual output, and max_tokens is only a cap -- so
+# paying once beats generating twice. Kept below MAX_TOKENS_CEILING so the
+# doubling retry still has somewhere to go on a genuinely oversized response.
+STRUCTURED_MAX_TOKENS = 12288
+
 
 class NvidiaError(RuntimeError):
     """Raised when NVIDIA NIM API returns an unrecoverable error."""
@@ -150,10 +171,18 @@ class NvidiaClient:
             "Content-Type": "application/json",
         }
         
-        # JSON extraction with minimal retry (just 1 attempt, no repair)
-        max_retries = 1  # No retry - if JSON is malformed, fail fast
+        # Two shots at usable JSON. This was 1 ("fail fast"), which made the
+        # repair branch below unreachable dead code -- `attempt < max_retries
+        # - 1` is never true when max_retries is 1 -- so a single bad response
+        # discarded a whole extraction pass with no second attempt. Kept small:
+        # each retry is a full generation, and a response that is wrong twice
+        # is usually wrong for a reason more retries won't fix.
+        max_retries = 2
         last_content = None
         last_error: str | None = None
+        # Grows on truncation (see the finish_reason handling below), so the
+        # retry has room the first attempt lacked.
+        retry_max_tokens: int | None = None
 
         for attempt in range(max_retries):
             started_at = time.monotonic()
@@ -190,13 +219,42 @@ class NvidiaClient:
                     # Log the response
                     logger.info("RESPONSE:")
                     if "choices" in data and len(data["choices"]) > 0:
-                        content = data["choices"][0]["message"]["content"]
+                        choice = data["choices"][0]
+                        content = choice["message"]["content"]
                         last_content = content
-                        
+                        finish_reason = choice.get("finish_reason")
+
                         logger.info(f"  Status: SUCCESS")
                         logger.info(f"  Content Length: {len(content)} characters")
+                        logger.info(f"  Finish Reason: {finish_reason}")
                         logger.info(f"  Content Preview: {content[:300]}...")
                         logger.info("=" * 80)
+
+                        # finish_reason == "length" means the model was cut off
+                        # mid-generation, not that it produced bad JSON. The
+                        # distinction matters: a repair prompt cannot fix a
+                        # response that ran out of room -- it resends the
+                        # truncated text and asks for MORE output, so it
+                        # truncates again. What is needed is a bigger budget.
+                        # DenseNet's architecture pass died exactly this way,
+                        # ending mid-word ('"eviden'), and was reported as
+                        # "Invalid JSON" which sent debugging the wrong way.
+                        if finish_reason == "length":
+                            current_budget = payload.get("max_tokens") or 4096
+                            grown = min(current_budget * 2, MAX_TOKENS_CEILING)
+                            if attempt < max_retries - 1 and grown > current_budget:
+                                logger.warning(
+                                    "Response truncated at %d tokens (finish_reason=length). "
+                                    "Retrying with max_tokens=%d.",
+                                    current_budget, grown,
+                                )
+                                retry_max_tokens = grown
+                                payload["max_tokens"] = grown
+                                continue
+                            logger.error(
+                                "Response truncated at %d tokens with no retry budget left.",
+                                current_budget,
+                            )
                         
                         # Validate and extract JSON if requested
                         if format_json:
@@ -228,10 +286,28 @@ class NvidiaClient:
                                         "role": "user",
                                         "content": f"Fix to valid JSON:\n\n{content}"
                                     }]
+                                    # A repair has to restate the whole object,
+                                    # so it needs at least as much room as the
+                                    # generation that just failed.
+                                    payload["max_tokens"] = min(
+                                        max((payload.get("max_tokens") or 4096) * 2, 4096),
+                                        MAX_TOKENS_CEILING,
+                                    )
                                     continue
                                 else:
+                                    # Name truncation explicitly. Reporting a
+                                    # cut-off response as "Invalid JSON" is
+                                    # what made DenseNet's failure look like a
+                                    # schema/parsing problem for two runs.
+                                    reason = (
+                                        "response truncated (hit the token limit)"
+                                        if finish_reason == "length"
+                                        else "malformed JSON"
+                                    )
                                     raise NvidiaError(
-                                        f"Invalid JSON after {max_retries} attempts.\n"
+                                        f"{reason} after {max_retries} attempts "
+                                        f"(finish_reason={finish_reason}, "
+                                        f"max_tokens={payload.get('max_tokens')}).\n"
                                         f"Content: {content[:300]}"
                                     )
                         else:
@@ -350,6 +426,7 @@ class NvidiaClient:
             model=model,
             temperature=temperature,
             format_json=True,
+            max_tokens=STRUCTURED_MAX_TOKENS,
         )
         
         response_time = time.time() - start_time

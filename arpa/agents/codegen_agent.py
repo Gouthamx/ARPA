@@ -35,11 +35,31 @@ from arpa.models import LLMClient, get_llm_client
 # yields partial code we can inspect instead of zero files.
 CODEGEN_MAX_TOKENS = 8192
 
-# Discourages the exact-token-repeat degeneration we've observed (a model
-# stuck emitting `self.fcN = nn.Linear(10, 10)` for hundreds of lines). A
-# moderate value; too high can push the model into avoiding legitimately
-# repeated tokens that are normal in code (e.g. `self.` or `nn.`).
-CODEGEN_FREQUENCY_PENALTY = 0.4
+# Disabled (None => not sent to the API at all).
+#
+# This was 0.4, to discourage the exact-token-repeat degeneration we'd seen
+# (a model stuck emitting `self.fcN = nn.Linear(10, 10)` for hundreds of
+# lines). The risk the old comment here anticipated -- "too high can push the
+# model into avoiding legitimately repeated tokens that are normal in code"
+# -- turned out to be exactly what was happening, and it was the single
+# biggest cause of unusable output.
+#
+# Measured 2026-08-15 on nvidia/nemotron-3-super-120b-a12b, same codegen
+# prompt, 4 trials each:
+#     frequency_penalty=0.4 -> 1/4 generations compiled
+#     frequency_penalty=0.0 -> 4/4 generations compiled
+# Failures were `unexpected indent` / `expected an indented block`, plus
+# real runs producing arguments mangled into identifiers
+# (`nn.Conv2d(in_channels=1_out_channels_32_kernel_size_3_padding_1)`) --
+# i.e. the penalty was suppressing the commas, `=` and indentation whitespace
+# that Python source repeats more than any other tokens.
+#
+# The runaway-repetition case this was guarding against is still caught, just
+# detected instead of suppressed: `_detect_repetition_warning()` flags such a
+# file and `_write_files()` quarantines it under an UNVERIFIED_ prefix. If
+# repetition does come back, prefer re-enabling this at a much lower value
+# (<=0.1) and re-running the A/B above rather than returning to 0.4.
+CODEGEN_FREQUENCY_PENALTY = None
 
 
 def _extract_code(raw: str) -> str:
@@ -239,6 +259,25 @@ Generate a complete train.py file with:
 Return ONLY the Python code in a single fenced code block, like this:
 ```python
 <complete file contents here>
+```
+Do not include any prose, explanation, or JSON wrapper before or after the code block.
+"""
+
+SYNTAX_REPAIR_PROMPT = """The Python file below does not compile -- it has a syntax error.
+
+Syntax error: {error}
+
+File contents:
+```python
+{code}
+```
+
+Return the COMPLETE corrected file with the syntax error fixed. Keep everything else -- logic,
+structure, imports, comments -- unchanged; only fix what's necessary to make it valid Python.
+
+Return ONLY the corrected Python code in a single fenced code block, like this:
+```python
+<complete corrected file contents here>
 ```
 Do not include any prose, explanation, or JSON wrapper before or after the code block.
 """
@@ -516,6 +555,18 @@ Do not include any prose, explanation, or JSON wrapper before or after the code 
 
             self._verify_syntax(gen_file)
 
+            if not gen_file.verified:
+                pre_repair_error = "; ".join(gen_file.syntax_errors)
+                self._repair_syntax(gen_file)
+                if gen_file.verified:
+                    result.generation_log.append(
+                        f"Repaired syntax error in {path}: {pre_repair_error}"
+                    )
+                else:
+                    result.generation_log.append(
+                        f"Syntax repair did not fix {path}: {pre_repair_error}"
+                    )
+
             repetition_warning = _detect_repetition_warning(gen_file.content)
             if repetition_warning:
                 gen_file.quality_warnings.append(repetition_warning)
@@ -569,6 +620,15 @@ Do not include any prose, explanation, or JSON wrapper before or after the code 
                 training_details += f"- Batch size: {_extract_value(training.batch_size)}\n"
             if training.epochs:
                 training_details += f"- Epochs: {_extract_value(training.epochs)}\n"
+            # Labelled distinctly from epochs on purpose: papers that schedule
+            # by iteration (ResNet's "60x10^4 iterations") state no epoch count,
+            # and passing the number through as epochs would be off by orders
+            # of magnitude.
+            if getattr(training, "max_iterations", None):
+                training_details += (
+                    f"- Max training iterations (steps, NOT epochs): "
+                    f"{_extract_value(training.max_iterations)}\n"
+                )
             if training.loss_function:
                 training_details += f"- Loss: {_extract_value(training.loss_function)}\n"
 
@@ -729,6 +789,50 @@ Do not include any prose, explanation, or JSON wrapper before or after the code 
             gen_file.verified = False
             gen_file.syntax_errors.append(str(exc))
             logger.warning("Syntax error in {}: {}", gen_file.path, exc)
+
+    def _repair_syntax(self, gen_file: GeneratedFile) -> None:
+        """One repair pass for a file that failed `_verify_syntax()`.
+
+        Feeds the exact `SyntaxError` back to the model and asks for a
+        corrected version, mirroring the retry-with-repair pattern already
+        used for malformed JSON elsewhere (`groq_client.py`'s `_try_parse`
+        repair loop, `nvidia_client.py`'s `extract_json` retry) -- same idea,
+        applied to Python syntax instead: give the model the specific error
+        rather than asking it to regenerate blind. Small models are far more
+        likely to fix one named error in otherwise-correct code than to
+        write several hundred lines syntactically perfect on the first try.
+
+        Mutates `gen_file` in place on success. On any failure along the way
+        (API error, empty response, still doesn't compile), `gen_file` is
+        left exactly as `_verify_syntax()` left it -- no worse off than
+        without this repair pass.
+        """
+        original_error = "; ".join(gen_file.syntax_errors) or "unknown syntax error"
+        logger.info("Attempting syntax repair for {} ({})", gen_file.path, original_error)
+
+        prompt = SYNTAX_REPAIR_PROMPT.format(error=original_error, code=gen_file.content)
+
+        try:
+            raw = self._chat_for_code(prompt)
+            repaired_code = _extract_code(raw)
+        except Exception as exc:  # noqa: BLE001 - a failed repair call is not fatal
+            logger.warning("Syntax repair call failed for {}: {}", gen_file.path, exc)
+            return
+
+        if not repaired_code:
+            logger.warning("Syntax repair for {} returned empty code; keeping original", gen_file.path)
+            return
+
+        try:
+            compile(repaired_code, gen_file.path, "exec")
+        except SyntaxError as exc:
+            logger.warning("Syntax repair for {} still doesn't compile: {}", gen_file.path, exc)
+            return
+
+        logger.info("Syntax repair succeeded for {}", gen_file.path)
+        gen_file.content = repaired_code
+        gen_file.verified = True
+        gen_file.syntax_errors = []
 
     def _write_files(self, files: list[GeneratedFile], output_dir: Path) -> None:
         """Write generated files to disk.

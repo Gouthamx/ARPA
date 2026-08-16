@@ -55,6 +55,64 @@ class GroqError(RuntimeError):
     """Raised when Groq API returns an unrecoverable error."""
 
 
+def _parse_reset_seconds(value: str | None) -> float | None:
+    """Parse Groq's rate-limit reset header format ("42.43s", "420ms") into seconds."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        if value.endswith("ms"):
+            return float(value[:-2]) / 1000.0
+        if value.endswith("s"):
+            return float(value[:-1])
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _retry_wait_seconds(exc: "RateLimitError", attempt: int) -> float:
+    """How long to wait before retrying a 429, in seconds.
+
+    ``openai.RateLimitError`` has no ``retry_after`` attribute (confirmed
+    against the installed SDK: ``dir(RateLimitError)`` exposes only ``code``,
+    ``param``, ``status_code``). The previous ``getattr(e, "retry_after",
+    None)`` therefore always fell through to a fixed exponential backoff
+    (~31-46s total across 5 attempts) regardless of how depleted Groq's
+    token bucket actually was -- on heavy calls (e.g. 8192-token codegen
+    requests) the real refill window can run ~60s, so every attempt fired
+    too early, kept 429'ing, and the whole extraction pass gave up.
+    ``RateLimitError`` does carry the real ``httpx.Response`` on
+    ``.response``, whose headers include the actual reset time
+    (``retry-after``, or Groq's ``x-ratelimit-reset-tokens`` /
+    ``-requests``) -- prefer that over guessing.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers:
+        retry_after = headers.get("retry-after")
+        if retry_after:
+            try:
+                return max(float(retry_after), 0.5)
+            except ValueError:
+                pass
+
+        reset_candidates = [
+            s for s in (
+                _parse_reset_seconds(headers.get("x-ratelimit-reset-tokens")),
+                _parse_reset_seconds(headers.get("x-ratelimit-reset-requests")),
+            )
+            if s is not None
+        ]
+        if reset_candidates:
+            # Whichever budget (tokens or requests) is tighter is the one
+            # actually blocking us; add a small margin since Groq's reset
+            # timers are approximate.
+            return max(reset_candidates) + 0.5
+
+    base = min(2 ** attempt, 30)
+    return base + random.uniform(0, 0.5 * base)
+
+
 class GroqClient:
     """Drop-in replacement for OpenRouterClient, targeting Groq's free API.
     
@@ -139,15 +197,11 @@ class GroqClient:
                 
             except RateLimitError as e:
                 last_error = e
-                # Respect Retry-After if the SDK/exception exposes it,
-                # otherwise fall back to exponential backoff with jitter.
-                retry_after = getattr(e, "retry_after", None)
-                if retry_after:
-                    wait = float(retry_after)
-                else:
-                    base = min(2 ** attempt, 30)
-                    wait = base + random.uniform(0, 0.5 * base)
-                
+                # Cap so one badly-timed 429 can't eat the whole stage's
+                # timeout budget on its own; the real wait is usually well
+                # under this anyway.
+                wait = min(_retry_wait_seconds(e, attempt), 90.0)
+
                 logger.warning(
                     "Groq rate limit hit (attempt %d/%d). Waiting %.1fs.",
                     attempt + 1, MAX_RATE_LIMIT_RETRIES, wait,
