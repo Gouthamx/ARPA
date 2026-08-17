@@ -56,6 +56,7 @@ from arpa.agents.dataset_agent import DatasetAgent
 from arpa.agents.extraction_agent import ExtractionAgent
 from arpa.core.config import get_settings
 from arpa.tools.pdf_pipeline import PdfToTextPipeline
+from arpa.tools.smoke_runner import CodeSmokeRunner, SmokeExpectations
 
 # ---------------------------------------------------------------------------
 # Timeouts
@@ -75,6 +76,12 @@ STAGE_TIMEOUTS = {
     "dataset": 600,
     "codegen": 900,
 }
+
+# Smoke execution runs a couple of CPU forward/backward passes on synthetic
+# tensors -- seconds of work. The budget is generous only so a large model on
+# a loaded machine isn't cut off, and short enough that code which starts
+# downloading a dataset on import is killed rather than left running.
+SMOKE_TIMEOUT_S = 180
 
 # How many times to attempt a stage that failed with a transient-looking error
 # (rate limit, provider timeout, 5xx). Cloud LLM endpoints hiccup; one retry
@@ -105,6 +112,17 @@ TRANSIENT_ERROR_MARKERS = (
     # failed") and a count-specific marker would silently stop matching.
     "extraction passes failed",
 )
+
+
+def _plain(value):
+    """Unwrap a ConfidenceField-style value to the bare Python value.
+
+    Fields on the methodology arrive wrapped or plain depending on which pass
+    produced them; the smoke harness needs the raw shape/int either way.
+    """
+    if value is None:
+        return None
+    return getattr(value, "value", value)
 
 
 class InterceptHandler(logging.Handler):
@@ -332,6 +350,7 @@ def test_paper(
     backend: str,
     *,
     verify_datasets: bool,
+    skip_smoke: bool = False,
 ) -> dict:
     """Run the full ARPA pipeline on a single paper."""
     result = {
@@ -346,9 +365,11 @@ def test_paper(
         "dataset_verified": False,
         "codegen_success": False,
         "syntax_valid": False,
+        "smoke_success": False,
         "dataset_name": None,
         "registry_source": None,
         "code_report": None,
+        "smoke_report": None,
         "errors": [],
         "time_seconds": 0.0,
     }
@@ -365,7 +386,7 @@ def test_paper(
 
     try:
         # -- Stage 1: PDF present -------------------------------------------
-        print("    [1/5] Checking PDF...")
+        print("    [1/6] Checking PDF...")
         pdf_path = papers_dir / f"{paper_key}_{paper_meta['arxiv_id']}.pdf"
         if not pdf_path.exists():
             result["errors"].append(f"pdf: not found ({pdf_path.name})")
@@ -375,7 +396,7 @@ def test_paper(
         print(f"    + PDF found ({pdf_path.stat().st_size // 1024}KB)")
 
         # -- Stage 2: PDF -> text -------------------------------------------
-        print("    [2/5] Converting PDF to text...")
+        print("    [2/6] Converting PDF to text...")
         try:
             pipeline = PdfToTextPipeline()
             pdf_result = pipeline.convert(pdf_path, paper_out)
@@ -389,7 +410,7 @@ def test_paper(
             return result
 
         # -- Stage 3: Methodology extraction (4 LLM passes) ------------------
-        print("    [3/5] Extracting methodology...")
+        print("    [3/6] Extracting methodology...")
         try:
             extraction_agent = ExtractionAgent(backend=backend)
             methodology = run_stage("extraction", extraction_agent.run, paper_text)
@@ -425,7 +446,7 @@ def test_paper(
         # Non-fatal by design: codegen only needs the methodology, so a dataset
         # miss should not mask whether code generation itself works.
         suffix = " (with download + Docker verify)" if verify_datasets else ""
-        print(f"    [4/5] Resolving dataset{suffix}...")
+        print(f"    [4/6] Resolving dataset{suffix}...")
         try:
             dataset_agent = DatasetAgent(backend=backend)
             dataset_result = run_stage(
@@ -457,7 +478,7 @@ def test_paper(
             fail("dataset", exc)
 
         # -- Stage 5: Code generation + syntax check ------------------------
-        print("    [5/5] Generating code...")
+        print("    [5/6] Generating code...")
         try:
             codegen_agent = CodeGenAgent(backend=backend)
             codegen_result = run_stage(
@@ -488,6 +509,57 @@ def test_paper(
                     print(f"      ! quality warning -> {warning}")
         except Exception as exc:  # noqa: BLE001
             fail("codegen", exc)
+
+        # -- Stage 6: Smoke execution ---------------------------------------
+        # The syntax check compiles each file alone, which cannot see across
+        # files: a train.py importing a symbol model.py never defines compiles
+        # cleanly and dies on the first run. That exact defect sat inside a
+        # 10/10 result. Actually running the code is what distinguishes
+        # "parses" from "works".
+        if skip_smoke:
+            print("    [6/6] Smoke execution... skipped (--no-smoke)")
+        elif not result["codegen_success"]:
+            print("    [6/6] Smoke execution... skipped (no code generated)")
+        else:
+            print("    [6/6] Smoke executing generated code...")
+            try:
+                desc = methodology.dataset_description
+                expectations = SmokeExpectations(
+                    input_shape=_plain(getattr(desc, "input_shape", None)),
+                    num_classes=_plain(getattr(desc, "num_classes", None)),
+                )
+                smoke = CodeSmokeRunner(
+                    timeout_s=SMOKE_TIMEOUT_S, use_docker=verify_datasets
+                ).run(generated_dir, expectations)
+
+                result["smoke_success"] = smoke.passed
+                result["smoke_report"] = {
+                    "summary": smoke.summary,
+                    "checks": smoke.checks,
+                    "error": smoke.error,
+                    "timed_out": smoke.timed_out,
+                    "missing_dependencies": smoke.missing_dependencies,
+                }
+
+                if smoke.missing_dependencies:
+                    # Not counted against the code, but say so plainly -- a
+                    # skipped check is weaker evidence than a passed one.
+                    deps = ", ".join(smoke.missing_dependencies)
+                    print(f"      i skipped some checks, not installed here: {deps}")
+
+                if smoke.passed:
+                    print(f"    + Code runs ({smoke.summary})")
+                else:
+                    print(f"    x Code does not run ({smoke.summary})")
+                    for check in smoke.failed_checks:
+                        detail = f"{check['name']}: {check['detail']}"
+                        result["errors"].append(f"smoke: {detail}")
+                        print(f"      ! {detail[:150]}")
+                    if smoke.error:
+                        result["errors"].append(f"smoke: {smoke.error}")
+                        print(f"      ! {smoke.error[:150]}")
+            except Exception as exc:  # noqa: BLE001 - a broken check is not a broken paper
+                fail("smoke", exc)
 
     except Exception as exc:  # noqa: BLE001 - last line of defence
         result["errors"].append(f"unexpected: {str(exc)[:200]}")
@@ -547,13 +619,26 @@ def estimate_minutes_per_paper(
 
 
 def paper_passed(r: dict) -> bool:
-    """A paper passes when the pipeline ran end to end AND the code compiles."""
-    return bool(
+    """A paper passes when the pipeline ran end to end AND the code runs.
+
+    Smoke execution is part of the bar, not a bonus. Compiling proves only
+    that each file parses in isolation, which a train.py importing a symbol
+    its model.py never defines does perfectly well right up until someone
+    runs it -- that defect sat inside a 10/10 result. A paper whose smoke
+    stage was skipped (--no-smoke, or no code to run) is judged on the older
+    criteria rather than being failed for a check that never ran.
+    """
+    core = bool(
         r.get("extraction_success")
         and r.get("dataset_success")
         and r.get("codegen_success")
         and r.get("syntax_valid")
     )
+    if not core:
+        return False
+    if r.get("smoke_report") is None:  # stage skipped or not reached
+        return True
+    return bool(r.get("smoke_success"))
 
 
 def generate_summary(results: list[dict], output_path: Path, *, verify_datasets: bool) -> None:
@@ -577,6 +662,8 @@ def generate_summary(results: list[dict], output_path: Path, *, verify_datasets:
     dataset_ok = sum(1 for r in results if r["dataset_success"])
     codegen_ok = sum(1 for r in results if r["codegen_success"])
     syntax_ok = sum(1 for r in results if r["syntax_valid"])
+    smoke_ran = [r for r in results if r.get("smoke_report") is not None]
+    smoke_ok = sum(1 for r in smoke_ran if r.get("smoke_success"))
     passed = sum(1 for r in results if paper_passed(r))
 
     lines.append("STAGE RESULTS")
@@ -584,7 +671,12 @@ def generate_summary(results: list[dict], output_path: Path, *, verify_datasets:
     lines.append(f"  Extraction Agent   : {extraction_ok}/{total}  ({pct(extraction_ok)})")
     lines.append(f"  Dataset Agent      : {dataset_ok}/{total}  ({pct(dataset_ok)})")
     lines.append(f"  CodeGen Agent      : {codegen_ok}/{total}  ({pct(codegen_ok)})")
-    lines.append(f"  Generated code OK  : {syntax_ok}/{total}  ({pct(syntax_ok)})")
+    lines.append(f"  Code compiles      : {syntax_ok}/{total}  ({pct(syntax_ok)})")
+    if smoke_ran:
+        pct_smoke = f"{(100.0 * smoke_ok / len(smoke_ran)):.0f}%"
+        lines.append(f"  Code actually runs : {smoke_ok}/{len(smoke_ran)}  ({pct_smoke})")
+    else:
+        lines.append("  Code actually runs : not checked (--no-smoke)")
     lines.append("")
     lines.append(f"  FULL PIPELINE PASS : {passed}/{total}  ({pct(passed)})")
     lines.append("")
@@ -613,6 +705,15 @@ def generate_summary(results: list[dict], output_path: Path, *, verify_datasets:
                      + (f"   via {r['registry_source']}" if r["registry_source"] else ""))
         lines.append(f"    CodeGen      : {mark(r['codegen_success'])}")
         lines.append(f"    Code syntax  : {mark(r['syntax_valid'])}")
+        smoke = r.get("smoke_report")
+        if smoke is None:
+            lines.append("    Smoke run    : not checked")
+        else:
+            lines.append(f"    Smoke run    : {mark(r.get('smoke_success'))}"
+                         f"   {smoke.get('summary', '')}")
+            if smoke.get("missing_dependencies"):
+                lines.append("                   (checks skipped, not installed: "
+                             + ", ".join(smoke["missing_dependencies"]) + ")")
 
         report = r.get("code_report")
         if report:
@@ -661,6 +762,11 @@ def main() -> None:
     parser.add_argument("--verify-datasets", action="store_true",
                         help="Actually download datasets and verify loading code in Docker "
                              "(slow; ImageNet-based papers will fail on download)")
+    parser.add_argument("--no-smoke", action="store_true",
+                        help="Skip smoke execution of the generated code (stage 6). "
+                             "Smoke runs a synthetic forward/backward pass -- no dataset "
+                             "downloads, no real training -- and is what distinguishes "
+                             "code that parses from code that works.")
     parser.add_argument("--stage-timeout", type=int, default=None,
                         help="Override the per-stage timeout (seconds) for every stage")
     parser.add_argument("--retries", type=int, default=STAGE_RETRIES,
@@ -830,6 +936,7 @@ def main() -> None:
         result = test_paper(
             paper_key, meta, papers_dir, output_dir, backend,
             verify_datasets=args.verify_datasets,
+            skip_smoke=args.no_smoke,
         )
         results.append(result)
 
