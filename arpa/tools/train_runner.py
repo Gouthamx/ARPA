@@ -364,8 +364,32 @@ class TrainingRunner:
             # dataset provides (a paper's model built for RGB, an MNIST loader
             # giving 1 channel). Adapt the input rather than call it a failure:
             # the mismatch is a codegen finding the smoke stage already reports.
+            # What the MODEL wants, which is not always what the dataset gives.
+            # Reading it off the first conv layer rather than assuming the
+            # dataset's shape: a generated DenseNet for CIFAR-10 was built with
+            # a 1-channel stem while CIFAR is RGB, and adapting toward the
+            # dataset left the mismatch in place ("expected input to have 1
+            # channels, but got 3"). The mismatch is a real codegen defect and
+            # is recorded as a note -- but it must not stop us measuring
+            # whether the model learns, which is the question this stage asks.
+            model_in_channels = None
+            for layer in model.modules():
+                if isinstance(layer, nn.Conv2d):
+                    model_in_channels = layer.in_channels
+                    break
+            if model_in_channels is None:
+                for layer in model.modules():
+                    if isinstance(layer, nn.Linear):
+                        break
+
+            if model_in_channels is not None and model_in_channels != SHAPE[0]:
+                out["notes"].append(
+                    "model expects " + str(model_in_channels) + " input channel(s), "
+                    + DATASET + " provides " + str(SHAPE[0]) + "; adapted to measure learning"
+                )
+
             def fit_input(x):
-                want_c = SHAPE[0]
+                want_c = model_in_channels or SHAPE[0]
                 if x.shape[1] == want_c:
                     return x
                 if want_c == 3 and x.shape[1] == 1:

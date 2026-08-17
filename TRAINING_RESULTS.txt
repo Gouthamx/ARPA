@@ -1,0 +1,51 @@
+==============================================================================
+ARPA TRAINING STAGE -- BENCHMARK RESULTS
+==============================================================================
+Date        : 2026-08-17 20:37:23
+Papers      : 10
+Steps/paper : 200
+
+  Attempted training : 2/10
+  Model learned      : 2/2
+  Skipped (by design): 8
+  Failed             : 0
+
+PER-PAPER
+------------------------------------------------------------------------------
+[easy1] Fashion-MNIST
+    skipped (no torch model in the generated code (sklearn paper?))
+
+[easy2] EMNIST
+    acc 68.8%, paper 96.2%, gap +27.4%, learning
+    accuracy 68.8% vs chance 2.1% over 200 steps
+
+[easy3] Kuzushiji-MNIST
+    skipped (model output is (1, 20, 20), not class logits (generative/non-classifier model))
+
+[medium1] ResNet
+    skipped ('ImageNet' is not a small trainable dataset)
+
+[medium2] VGG
+    skipped ('ILSVRC' is not a small trainable dataset)
+
+[medium3] DenseNet
+    acc 32.7%, learning
+    accuracy 32.7% vs chance 10.0% over 200 steps
+
+[medium4] MobileNetV2
+    skipped ('ImageNet' is not a small trainable dataset)
+
+[hard1] SimCLR
+    skipped ('ImageNet' is not a small trainable dataset)
+
+[hard2] Bilinear CNN
+    skipped ('Caltech-UCSD birds' is not a small trainable dataset)
+
+[hard3] DeiT
+    skipped ('ImageNet' is not a small trainable dataset)
+
+==============================================================================
+Note: a capped run of a few hundred steps is not a reproduction of a
+paper trained for tens of epochs. 'learned' is the claim being made;
+the gap against the published figure is reported as context.
+==============================================================================
