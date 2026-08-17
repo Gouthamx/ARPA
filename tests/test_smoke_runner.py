@@ -267,3 +267,98 @@ class TestSummary:
     def test_skipped_checks_count_as_neither_pass_nor_total(self, checks, expected):
         """Counting them as passes produced nonsense like '6/3 checks passed'."""
         assert SmokeResult(passed=True, checks=checks).summary == expected
+
+
+class TestModelSelection:
+    """Which class the harness picks is the whole result. A file contains the
+    model plus its building blocks, and sometimes a loss; picking wrong
+    reports a defect in the wrong place."""
+
+    def test_prefers_the_class_taking_num_classes(self, tmp_path):
+        """Definition order is not reliable -- a DeiT file defines the model at
+        line 34 and its Block at 165, other files do the reverse. Accepting
+        num_classes is what distinguishes a classifier from a building block."""
+        d = _write(
+            tmp_path,
+            model="""
+                import torch.nn as nn
+
+                class DeiT(nn.Module):
+                    def __init__(self, num_classes=10):
+                        super().__init__()
+                        self.fc = nn.Linear(12, num_classes)
+                    def forward(self, x):
+                        return self.fc(x.flatten(1))
+
+                class Block(nn.Module):
+                    def __init__(self, dim=8):
+                        super().__init__()
+                        self.fc = nn.Linear(dim, dim)
+                    def forward(self, x):
+                        return self.fc(x)
+            """,
+        )
+        result = CodeSmokeRunner(timeout_s=90).run(
+            d, SmokeExpectations(input_shape=[12], num_classes=10)
+        )
+        assert result.passed, result.failed_checks
+        chosen = next(c for c in result.checks if c["name"] == "model_instantiates")
+        assert "DeiT" in chosen["detail"]
+
+    def test_loss_modules_are_not_selected(self, tmp_path):
+        """A loss is an nn.Module whose forward takes (pred, target); feeding
+        it one tensor raises a TypeError that looks like a broken model."""
+        d = _write(
+            tmp_path,
+            model="""
+                import torch.nn as nn
+
+                class Net(nn.Module):
+                    def __init__(self, num_classes=10):
+                        super().__init__()
+                        self.fc = nn.Linear(12, num_classes)
+                    def forward(self, x):
+                        return self.fc(x.flatten(1))
+
+                class ContrastiveLoss(nn.Module):
+                    def __init__(self, num_classes=10):
+                        super().__init__()
+                    def forward(self, features, labels):
+                        return features.sum()
+            """,
+        )
+        result = CodeSmokeRunner(timeout_s=90).run(
+            d, SmokeExpectations(input_shape=[12], num_classes=10)
+        )
+        assert result.passed, result.failed_checks
+
+    def test_model_that_cannot_construct_is_reported_not_masked(self, tmp_path):
+        """Falling back to a helper class that happens to build hides the real
+        fault: a SimCLR model raising 'degrees should be a sequence of length
+        2' was reported as a stride error inside its Sobel filter."""
+        d = _write(
+            tmp_path,
+            model="""
+                import torch.nn as nn
+
+                class SobelFilter(nn.Module):
+                    def __init__(self):
+                        super().__init__()
+                    def forward(self, x):
+                        return x
+
+                class RealModel(nn.Module):
+                    def __init__(self, num_classes=10):
+                        super().__init__()
+                        raise ValueError("degrees should be a sequence of length 2")
+                    def forward(self, x):
+                        return x
+            """,
+        )
+        result = CodeSmokeRunner(timeout_s=90).run(
+            d, SmokeExpectations(input_shape=[12], num_classes=10)
+        )
+        assert not result.passed
+        failure = next(c for c in result.failed_checks if c["name"] == "model_instantiates")
+        assert "RealModel" in failure["detail"]
+        assert "degrees" in failure["detail"]

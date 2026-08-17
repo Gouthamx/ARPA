@@ -106,6 +106,36 @@ def _extract_code(raw: str) -> str:
     return text
 
 
+# `super(Foo).__init__()` -- one argument, no `self`. Valid syntax, so it
+# compiles and passes every static check, but it builds an *unbound* super
+# object whose __init__ never runs against the instance. In an nn.Module that
+# surfaces as "cannot assign module before Module.__init__() call" on the very
+# first layer assignment. One benchmark paper shipped three of them.
+_UNBOUND_SUPER = re.compile(r"super\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\.\s*__init__\s*\(\s*\)")
+
+
+def _repair_known_defects(code: str) -> tuple[str, list[str]]:
+    """Mechanically fix generated-code mistakes with one unambiguous correction.
+
+    Only patterns that are *always* wrong and have a *single* right answer
+    belong here -- this rewrites the model's output, so a guess would be worse
+    than the defect. Anything needing judgement goes to the LLM repair pass
+    instead.
+
+    Returns the repaired code and a list of what was changed.
+    """
+    notes: list[str] = []
+    if not code:
+        return code, notes
+
+    repaired, count = _UNBOUND_SUPER.subn("super().__init__()", code)
+    if count:
+        notes.append(
+            f"rewrote {count} unbound super(Cls).__init__() call(s) to super().__init__()"
+        )
+    return repaired, notes
+
+
 _REPEATED_LINE_MIN_COUNT = 20
 _REPEATED_LINE_MIN_FRACTION = 0.15
 
@@ -195,6 +225,10 @@ CODEGEN_SYSTEM = """You are an ML engineer generating complete, runnable PyTorch
 
 Your code must:
 - Be complete and syntactically correct Python
+- Call super().__init__() -- with no arguments -- as the FIRST statement of
+  every nn.Module subclass __init__. Never super(ClassName).__init__(), which
+  is legal syntax but leaves the module uninitialised and fails on the first
+  layer assignment.
 - Follow PyTorch best practices
 - Include proper error handling
 - Be well-documented with docstrings and comments
@@ -546,6 +580,14 @@ Do not include any prose, explanation, or JSON wrapper before or after the code 
             if not code:
                 logger.warning(empty_warning)
                 return None
+
+            # Applied before verification: these defects compile cleanly, so a
+            # syntax check would pass them straight through to a crash at
+            # import or first use.
+            code, repairs = _repair_known_defects(code)
+            for note in repairs:
+                logger.info("{}: {}", path, note)
+                result.generation_log.append(f"{path}: {note}")
 
             gen_file = GeneratedFile(
                 path=path,

@@ -95,6 +95,49 @@ Code constraints:
 """
 
 
+def _repair_escaped_source(code: str) -> str:
+    """Undo double-escaped newlines in code that arrived through JSON.
+
+    The loading code is returned inside a JSON field, and models sometimes
+    escape it twice -- so what lands in the string is a literal backslash-n
+    rather than a newline. The result is a whole module on one physical line,
+    which Python rejects at the first character ("unexpected character after
+    line continuation character"). One benchmark paper shipped a
+    dataset_loader.py with 24 literal \\n and not a single real newline.
+
+    The test is deliberately narrow: real Python source always contains
+    newlines, so *zero* real newlines alongside escaped ones is unambiguous.
+    Anything with genuine line breaks is left untouched, so a legitimate
+    "\\n" inside a string literal is never rewritten.
+    """
+    if not code or "\n" in code:
+        return code
+    if "\\n" not in code:
+        return code
+
+    repaired = code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+    logger.warning(
+        "Loading code arrived with escaped newlines and no real ones; "
+        "unescaped {} line(s) so the module can parse.",
+        repaired.count("\n"),
+    )
+    return repaired
+
+
+def _describe_syntax_error(code: str) -> str | None:
+    """Return a short description if the code does not parse, else None.
+
+    dataset_loader.py comes from this agent rather than CodeGenAgent, so it
+    was never covered by the generated-code syntax check -- which is exactly
+    how a file that could not parse reached a run reported as 10/10.
+    """
+    try:
+        compile(code, "dataset_loader.py", "exec")
+        return None
+    except SyntaxError as exc:
+        return f"line {exc.lineno}: {exc.msg}"
+
+
 class DatasetAgent:
     """Autonomous dataset resolution, codegen, and sandbox verification."""
 
@@ -187,6 +230,20 @@ class DatasetAgent:
             desc, resolution, skeleton, paper_context or desc.raw_context or ""
         )
         result.preprocess_confidence = preprocess_summary
+
+        # Falling back to the skeleton beats emitting a module that cannot be
+        # imported: everything downstream (smoke execution, training, the user)
+        # depends on this file parsing, and a working skeleton is more useful
+        # than broken bespoke code.
+        syntax_problem = _describe_syntax_error(loading_code)
+        if syntax_problem:
+            logger.error(
+                "Generated loading code does not parse ({}); falling back to the skeleton.",
+                syntax_problem,
+            )
+            result.escalation_reason = f"loading code syntax error -- {syntax_problem}"
+            loading_code = skeleton
+
         result.loading_code = loading_code
 
         # Step 4 — Docker verification with retries
@@ -314,7 +371,7 @@ class DatasetAgent:
                 format_json=True,
             )
             data = self.llm.extract_json(raw)
-            code = data.get("loading_code", skeleton)
+            code = _repair_escaped_source(data.get("loading_code", skeleton))
             steps = [
                 PreprocessStep(
                     name=s.get("name", "step"),

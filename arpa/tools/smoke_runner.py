@@ -302,9 +302,80 @@ class CodeSmokeRunner:
                     if issubclass(obj, nn.Module) and obj is not nn.Module:
                         if obj.__module__ in loaded:
                             candidates.append(obj)
-            # Deepest subclass first: a file defining BasicBlock and ResNet
-            # should be exercised through ResNet, not its building block.
-            candidates.sort(key=lambda c: len(c.__mro__), reverse=True)
+            # Definition order, last first. Model files are written bottom-up
+            # -- building blocks, then the model that composes them -- so the
+            # last class defined is almost always the one to exercise.
+            # Inheritance depth was the previous heuristic and picked wrong on
+            # a SimCLR file whose classes were SobelFilter,
+            # StochasticDataAugmentation, ResNet50ProjectionHead: it tested the
+            # Sobel utility and reported the paper as broken.
+            def definition_line(cls):
+                """Where the class sits in its file.
+
+                Read off __init__'s code object rather than
+                inspect.getsourcelines, which needs to resolve the source file
+                and returns nothing for a module imported this way -- every
+                class then tied at -1 and the ranking silently degraded to
+                alphabetical, picking `Block` over the VisionTransformer that
+                composes it.
+                """
+                for attr in ("__init__", "forward"):
+                    func = getattr(cls, attr, None)
+                    code = getattr(func, "__code__", None)
+                    if code is not None:
+                        return code.co_firstlineno
+                try:
+                    return inspect.getsourcelines(cls)[1]
+                except (OSError, TypeError):
+                    return -1
+
+            def takes_single_input(cls):
+                """Can forward() be driven by one tensor?
+
+                Loss functions and metrics are nn.Modules too, and a SimCLR
+                file ends with SupervisedContrastiveLoss, whose forward wants
+                (features, labels). Feeding it one tensor raises a TypeError
+                that looks like a broken model but is really the wrong object
+                under test. A model takes exactly one required input.
+                """
+                try:
+                    params = list(inspect.signature(cls.forward).parameters.values())[1:]
+                except (TypeError, ValueError):
+                    return True
+                required = [
+                    p for p in params
+                    if p.default is inspect.Parameter.empty
+                    and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                ]
+                return len(required) <= 1
+
+            testable = [c for c in candidates if takes_single_input(c)]
+            if testable:
+                candidates = testable
+
+            def takes_num_classes(cls):
+                """Does the constructor accept num_classes?
+
+                The strongest available signal for "this is the paper's model
+                rather than one of its building blocks": a classifier is
+                parameterised by class count, a Block or PatchEmbed is not.
+                Definition order was tried first and is not reliable -- a DeiT
+                file defines the model at line 34 and its Block at 165, while
+                other files do the reverse.
+                """
+                try:
+                    return "num_classes" in inspect.signature(cls.__init__).parameters
+                except (TypeError, ValueError):
+                    return False
+
+            def rank(cls):
+                return (
+                    1 if takes_num_classes(cls) else 0,
+                    1 if cls.__module__ == "model" else 0,
+                    definition_line(cls),
+                )
+
+            candidates.sort(key=rank, reverse=True)
 
             if not candidates:
                 # Legitimate for benchmark papers that use sklearn estimators
@@ -314,17 +385,28 @@ class CodeSmokeRunner:
                 check("backward_pass", True, "no model", skipped=True)
                 emit(); sys.exit(0)
 
-            model, ctor_error = None, ""
-            for cls in candidates:
+            def try_construct(cls):
                 for kwargs in ({{}}, {{"num_classes": NUM_CLASSES}} if NUM_CLASSES else {{}}):
                     if kwargs.get("num_classes") is None and kwargs:
                         continue
                     try:
-                        model = cls(**kwargs); break
+                        return cls(**kwargs), ""
                     except Exception as exc:
-                        ctor_error = cls.__name__ + ": " + type(exc).__name__ + ": " + str(exc)
-                if model is not None:
-                    break
+                        err = cls.__name__ + ": " + type(exc).__name__ + ": " + str(exc)
+                return None, err
+
+            # The top-ranked candidate is the paper's model. If it cannot be
+            # constructed, that IS the result -- do not quietly fall back to a
+            # helper class that happens to build. A SimCLR file whose model
+            # raised "degrees should be a sequence of length 2" was reported as
+            # a stride error inside its Sobel filter, which pointed at the
+            # wrong file entirely.
+            model, ctor_error = try_construct(candidates[0])
+            if model is None:
+                check("model_instantiates", False, ctor_error)
+                check("forward_pass", False, "model could not be constructed")
+                check("backward_pass", False, "model could not be constructed")
+                emit(); sys.exit(0)
 
             if model is None:
                 check("model_instantiates", False, ctor_error)
