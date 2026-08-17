@@ -20,3 +20,6 @@ htmlcov/
 dist/
 build/
 data/
+
+# Word lock files (created while a .docx is open)
+~$*
