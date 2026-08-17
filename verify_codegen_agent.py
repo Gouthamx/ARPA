@@ -57,6 +57,7 @@ from arpa.agents.extraction_agent import ExtractionAgent
 from arpa.core.config import get_settings
 from arpa.tools.pdf_pipeline import PdfToTextPipeline
 from arpa.tools.smoke_runner import CodeSmokeRunner, SmokeExpectations
+from arpa.tools.train_runner import TrainingRunner
 
 # ---------------------------------------------------------------------------
 # Timeouts
@@ -82,6 +83,10 @@ STAGE_TIMEOUTS = {
 # a loaded machine isn't cut off, and short enough that code which starts
 # downloading a dataset on import is killed rather than left running.
 SMOKE_TIMEOUT_S = 180
+
+# Training downloads a dataset (CIFAR-10 is ~170MB) then runs a capped number
+# of steps, so the budget covers a cold cache on a slow link.
+TRAIN_TIMEOUT_S = 900
 
 # How many times to attempt a stage that failed with a transient-looking error
 # (rate limit, provider timeout, 5xx). Cloud LLM endpoints hiccup; one retry
@@ -351,6 +356,7 @@ def test_paper(
     *,
     verify_datasets: bool,
     skip_smoke: bool = False,
+    train_check: bool = False,
 ) -> dict:
     """Run the full ARPA pipeline on a single paper."""
     result = {
@@ -366,10 +372,12 @@ def test_paper(
         "codegen_success": False,
         "syntax_valid": False,
         "smoke_success": False,
+        "train_success": False,
         "dataset_name": None,
         "registry_source": None,
         "code_report": None,
         "smoke_report": None,
+        "train_report": None,
         "errors": [],
         "time_seconds": 0.0,
     }
@@ -386,7 +394,7 @@ def test_paper(
 
     try:
         # -- Stage 1: PDF present -------------------------------------------
-        print("    [1/6] Checking PDF...")
+        print("    [1/7] Checking PDF...")
         pdf_path = papers_dir / f"{paper_key}_{paper_meta['arxiv_id']}.pdf"
         if not pdf_path.exists():
             result["errors"].append(f"pdf: not found ({pdf_path.name})")
@@ -396,7 +404,7 @@ def test_paper(
         print(f"    + PDF found ({pdf_path.stat().st_size // 1024}KB)")
 
         # -- Stage 2: PDF -> text -------------------------------------------
-        print("    [2/6] Converting PDF to text...")
+        print("    [2/7] Converting PDF to text...")
         try:
             pipeline = PdfToTextPipeline()
             pdf_result = pipeline.convert(pdf_path, paper_out)
@@ -410,7 +418,7 @@ def test_paper(
             return result
 
         # -- Stage 3: Methodology extraction (4 LLM passes) ------------------
-        print("    [3/6] Extracting methodology...")
+        print("    [3/7] Extracting methodology...")
         try:
             extraction_agent = ExtractionAgent(backend=backend)
             methodology = run_stage("extraction", extraction_agent.run, paper_text)
@@ -446,7 +454,7 @@ def test_paper(
         # Non-fatal by design: codegen only needs the methodology, so a dataset
         # miss should not mask whether code generation itself works.
         suffix = " (with download + Docker verify)" if verify_datasets else ""
-        print(f"    [4/6] Resolving dataset{suffix}...")
+        print(f"    [4/7] Resolving dataset{suffix}...")
         try:
             dataset_agent = DatasetAgent(backend=backend)
             dataset_result = run_stage(
@@ -478,7 +486,7 @@ def test_paper(
             fail("dataset", exc)
 
         # -- Stage 5: Code generation + syntax check ------------------------
-        print("    [5/6] Generating code...")
+        print("    [5/7] Generating code...")
         try:
             codegen_agent = CodeGenAgent(backend=backend)
             codegen_result = run_stage(
@@ -517,11 +525,11 @@ def test_paper(
         # 10/10 result. Actually running the code is what distinguishes
         # "parses" from "works".
         if skip_smoke:
-            print("    [6/6] Smoke execution... skipped (--no-smoke)")
+            print("    [6/7] Smoke execution... skipped (--no-smoke)")
         elif not result["codegen_success"]:
-            print("    [6/6] Smoke execution... skipped (no code generated)")
+            print("    [6/7] Smoke execution... skipped (no code generated)")
         else:
-            print("    [6/6] Smoke executing generated code...")
+            print("    [6/7] Smoke executing generated code...")
             try:
                 desc = methodology.dataset_description
                 expectations = SmokeExpectations(
@@ -560,6 +568,48 @@ def test_paper(
                         print(f"      ! {smoke.error[:150]}")
             except Exception as exc:  # noqa: BLE001 - a broken check is not a broken paper
                 fail("smoke", exc)
+
+        # -- Stage 7: Train on real data + compare to the paper -------------
+        # The only stage that tests the project's actual claim. Everything
+        # before it verifies form: the code parses, then it executes. Neither
+        # says whether the model learns.
+        if not train_check:
+            pass  # opt-in; --train enables it
+        elif not result["codegen_success"]:
+            print("    [7/7] Training... skipped (no code generated)")
+        else:
+            print("    [7/7] Training on real data...")
+            try:
+                desc = methodology.dataset_description
+                evaluation = methodology.evaluation
+                outcome = TrainingRunner(timeout_s=TRAIN_TIMEOUT_S).run(
+                    generated_dir,
+                    _plain(getattr(desc, "name", None)),
+                    reported_metric=_plain(getattr(evaluation, "reported_metric", None)),
+                    num_classes=_plain(getattr(desc, "num_classes", None)),
+                )
+                result["train_success"] = outcome.learns
+                result["train_report"] = {
+                    "summary": outcome.summary,
+                    "trains": outcome.trains,
+                    "learns": outcome.learns,
+                    "skipped_reason": outcome.skipped_reason,
+                    "dataset": outcome.dataset,
+                    "steps": outcome.steps,
+                    "initial_loss": outcome.initial_loss,
+                    "final_loss": outcome.final_loss,
+                    "test_accuracy": outcome.test_accuracy,
+                    "reported_metric": outcome.reported_metric,
+                    "gap": outcome.gap,
+                    "error": outcome.error,
+                    "notes": outcome.notes,
+                }
+                marker = "+" if (outcome.learns or outcome.skipped_reason) else "x"
+                print(f"    {marker} {outcome.summary}")
+                for note in outcome.notes:
+                    print(f"      i {note[:150]}")
+            except Exception as exc:  # noqa: BLE001
+                fail("training", exc)
 
     except Exception as exc:  # noqa: BLE001 - last line of defence
         result["errors"].append(f"unexpected: {str(exc)[:200]}")
@@ -767,6 +817,10 @@ def main() -> None:
                              "Smoke runs a synthetic forward/backward pass -- no dataset "
                              "downloads, no real training -- and is what distinguishes "
                              "code that parses from code that works.")
+    parser.add_argument("--train", action="store_true",
+                        help="Train the generated model briefly on real data and compare "
+                             "accuracy against the paper's reported metric. Only runs for "
+                             "small datasets (MNIST family, CIFAR); ImageNet papers are skipped.")
     parser.add_argument("--stage-timeout", type=int, default=None,
                         help="Override the per-stage timeout (seconds) for every stage")
     parser.add_argument("--retries", type=int, default=STAGE_RETRIES,
@@ -937,6 +991,7 @@ def main() -> None:
             paper_key, meta, papers_dir, output_dir, backend,
             verify_datasets=args.verify_datasets,
             skip_smoke=args.no_smoke,
+            train_check=args.train,
         )
         results.append(result)
 
