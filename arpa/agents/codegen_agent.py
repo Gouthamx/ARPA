@@ -61,6 +61,11 @@ CODEGEN_MAX_TOKENS = 8192
 # (<=0.1) and re-running the A/B above rather than returning to 0.4.
 CODEGEN_FREQUENCY_PENALTY = None
 
+# Budget for the runtime check that drives repair. It builds the model and runs
+# one forward/backward on synthetic tensors -- seconds of work; the headroom is
+# for a large model on a loaded machine.
+RUNTIME_REPAIR_TIMEOUT_S = 240
+
 
 def _extract_code(raw: str) -> str:
     """Pull Python source out of an LLM response.
@@ -297,6 +302,28 @@ Return ONLY the Python code in a single fenced code block, like this:
 Do not include any prose, explanation, or JSON wrapper before or after the code block.
 """
 
+RUNTIME_REPAIR_PROMPT = """The Python file below compiles, but fails when it is actually used.
+
+Error: {error}
+
+File contents:
+```python
+{code}
+```
+
+Fix the cause of that error. Keep everything else -- architecture, layer sizes,
+hyperparameters, comments -- unchanged; change only what is needed to make the
+code work. Common causes: an argument passed in the wrong shape or type, a
+constructor given a value it does not accept, or a layer configured with
+dimensions that do not match.
+
+Return ONLY the corrected Python code in a single fenced code block, like this:
+```python
+<complete corrected file contents here>
+```
+Do not include any prose, explanation, or JSON wrapper before or after the code block.
+"""
+
 SYNTAX_REPAIR_PROMPT = """The Python file below does not compile -- it has a syntax error.
 
 Syntax error: {error}
@@ -385,6 +412,12 @@ class CodeGenAgent:
             # 3. Write files if output_dir provided
             if output_dir:
                 self._write_files(result.files, Path(output_dir))
+                # 4. Repair faults that only appear when the code is used.
+                # Syntax repair cannot reach these: the file compiles, and the
+                # error surfaces on construction or the first forward pass --
+                # a constructor handed four rotation angles where torchvision
+                # wants two, a layer whose dimensions do not line up.
+                self._repair_runtime_failures(result, Path(output_dir), methodology=methodology)
 
             result.success = True
             logger.info("Code generation complete: {} files generated", len(result.files))
@@ -831,6 +864,101 @@ Do not include any prose, explanation, or JSON wrapper before or after the code 
             gen_file.verified = False
             gen_file.syntax_errors.append(str(exc))
             logger.warning("Syntax error in {}: {}", gen_file.path, exc)
+
+    def _repair_runtime_failures(
+        self,
+        result: CodegenResult,
+        output_dir: Path,
+        *,
+        methodology: MethodologySpec | None = None,
+    ) -> None:
+        """Smoke-run the written files and give the model one shot at any fault.
+
+        The syntax pass proves a file parses; this proves it works. They catch
+        different things and neither substitutes for the other -- a SimCLR
+        model calling RandomRotation with four angles instead of a (min, max)
+        pair compiles perfectly and raises the moment anyone builds it.
+
+        Only model.py is repaired, since that is where instantiation and
+        forward faults live, and only once: a model that is still broken after
+        being shown its own traceback is not going to be fixed by asking a
+        third time.
+        """
+        # Imported here rather than at module scope: the smoke runner spawns a
+        # subprocess and pulls in torch, which is a heavy import to force on
+        # every consumer of this agent.
+        from arpa.tools.smoke_runner import CodeSmokeRunner, SmokeExpectations
+
+        model_file = next((f for f in result.files if f.path == "model.py"), None)
+        if model_file is None or not model_file.verified:
+            return  # nothing to run, or syntax repair already gave up
+
+        desc = getattr(methodology, "dataset_description", None)
+        expectations = SmokeExpectations(
+            input_shape=_extract_value(getattr(desc, "input_shape", None)),
+            num_classes=_extract_value(getattr(desc, "num_classes", None)),
+        )
+
+        try:
+            outcome = CodeSmokeRunner(timeout_s=RUNTIME_REPAIR_TIMEOUT_S).run(
+                output_dir, expectations
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken check is not a broken model
+            logger.warning("Runtime check failed to run: {}", exc)
+            return
+
+        # Import failures belong to other files, and a missing third-party
+        # package says nothing about the code.
+        faults = [
+            c for c in outcome.failed_checks
+            if c.get("name") in {"model_instantiates", "forward_pass", "backward_pass"}
+        ]
+        if not faults:
+            return
+
+        detail = "; ".join(f"{c['name']}: {c['detail']}" for c in faults)
+        logger.info("Attempting runtime repair for model.py ({})", detail[:160])
+
+        try:
+            raw = self._chat_for_code(
+                RUNTIME_REPAIR_PROMPT.format(error=detail, code=model_file.content)
+            )
+            repaired = _extract_code(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Runtime repair call failed: {}", exc)
+            return
+
+        if not repaired:
+            return
+        try:
+            compile(repaired, "model.py", "exec")
+        except SyntaxError as exc:
+            logger.warning("Runtime repair produced invalid syntax: {}", exc)
+            return
+
+        # Only keep the repair if it actually fixed something. Rewriting a
+        # working-but-imperfect file with an equally broken one is worse than
+        # leaving the original, which at least matches what was reported.
+        previous = model_file.content
+        model_file.content = repaired
+        self._write_files([model_file], output_dir)
+
+        recheck = CodeSmokeRunner(timeout_s=RUNTIME_REPAIR_TIMEOUT_S).run(
+            output_dir, expectations
+        )
+        still_failing = [
+            c for c in recheck.failed_checks
+            if c.get("name") in {"model_instantiates", "forward_pass", "backward_pass"}
+        ]
+        if still_failing:
+            logger.warning("Runtime repair did not fix model.py; reverting to the original")
+            model_file.content = previous
+            self._write_files([model_file], output_dir)
+            result.generation_log.append(f"Runtime repair failed for model.py: {detail[:120]}")
+            return
+
+        logger.info("Runtime repair succeeded for model.py")
+        result.generation_log.append(f"Repaired runtime fault in model.py: {detail[:120]}")
 
     def _repair_syntax(self, gen_file: GeneratedFile) -> None:
         """One repair pass for a file that failed `_verify_syntax()`.
