@@ -460,14 +460,51 @@ class CodeGenAgent:
         logger.info("Generating model architecture")
 
         # Collect architecture details
-        arch_details = "No specific architecture mentioned in paper.\n"
-        if arch and arch.notes:
-            arch_details = arch.notes
+        # Lead with what the model IS. This block previously opened with
+        # "No specific architecture mentioned in paper." whenever notes were
+        # empty -- and then listed seven components underneath, contradicting
+        # itself. model_name, architecture_family and backbone were never sent
+        # at all, so a run that had correctly extracted "ResNet" / "Residual
+        # Network" told CodeGen the architecture was unknown and handed it a
+        # bare list of convs. It built a plain CNN with no shortcuts, which
+        # drops the one idea the ResNet paper contributes.
+        identity: list[str] = []
+        if arch:
+            for label, field in (
+                ("Model", arch.model_name),
+                ("Architecture family", arch.architecture_family),
+                ("Backbone", arch.backbone),
+            ):
+                value = _extract_value(field)
+                if value:
+                    identity.append(f"{label}: {value}")
+
+        sections: list[str] = []
+        if identity:
+            sections.append("\n".join(identity))
+            sections.append(
+                "Implement this architecture faithfully, including the structural "
+                "features its family implies (for a residual network, the skip "
+                "connections; for a transformer, the attention blocks). The "
+                "components below are the paper's layer specification, not a "
+                "licence to emit a plain feed-forward stack."
+            )
+
+        notes = _extract_value(arch.notes) if arch else None
+        if notes:
+            sections.append(str(notes))
 
         if arch and arch.components:
-            arch_details += "\n\nComponents:\n"
+            lines = ["Components:"]
             for comp in arch.components:
-                arch_details += f"- {comp.name} ({comp.kind}): {comp.parameters}\n"
+                lines.append(f"- {comp.name} ({comp.kind}): {comp.parameters}")
+            sections.append("\n".join(lines))
+
+        arch_details = (
+            "\n\n".join(sections)
+            if sections
+            else "No specific architecture mentioned in paper.\n"
+        )
 
         # Collect missing details
         missing_details = []
