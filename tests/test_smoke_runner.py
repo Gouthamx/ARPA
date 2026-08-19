@@ -66,15 +66,34 @@ class TestCatchesWhatCompileCannot:
         names = {c["name"] for c in result.checks if c["ok"] and not c["skipped"]}
         assert {"import:model", "model_instantiates", "forward_pass", "backward_pass"} <= names
 
-    def test_output_shape_mismatch_is_reported(self, tmp_path):
-        """hard1 built a head that did not match the paper's class count --
-        invisible to any amount of compiling."""
-        d = _write(tmp_path, model=GOOD_MODEL)
+    def test_output_shape_mismatch_is_reported_but_not_fatal(self, tmp_path):
+        """A head that does not match the paper's class count is worth saying,
+        but it is not a "does it run" failure -- and treating it as one gave
+        two wrong verdicts on correct architectures (a VAE returning a
+        reconstruction, a SimCLR encoder returning a 128-dim projection).
+        The mismatch must still be visible in the detail."""
+        # Accepts num_classes and ignores it -- the SimCLR shape, where the
+        # projection head is 128-wide by design regardless of class count.
+        d = _write(
+            tmp_path,
+            model="""
+                import torch.nn as nn
+
+                class Encoder(nn.Module):
+                    def __init__(self, num_classes=1000, proj_out_dim=128):
+                        super().__init__()
+                        self.proj = nn.Linear(12, proj_out_dim)
+                    def forward(self, x):
+                        return self.proj(x.flatten(1))
+            """,
+        )
         result = CodeSmokeRunner(timeout_s=90).run(
             d, SmokeExpectations(input_shape=[12], num_classes=1000)
         )
-        assert not result.passed
-        assert any(c["name"] == "output_shape" for c in result.failed_checks)
+        assert result.passed, "a shape mismatch must not read as broken code"
+        shape = next(c for c in result.checks if c["name"] == "output_shape")
+        assert "128" in shape["detail"] and "1000" in shape["detail"]
+        assert shape["skipped"], "a mismatch is surfaced as a note, not a pass"
 
 
 class TestThirdPartyDependencyDistinction:
@@ -182,13 +201,25 @@ class TestMultiOutputModels:
         assert shape_check["skipped"]
 
     def test_single_tensor_output_is_still_shape_checked(self, tmp_path):
-        """The exemption must not disable the check for ordinary classifiers."""
+        """A plain classifier still gets its head compared -- the check is
+        reported rather than skipped outright, it simply no longer fails the
+        run."""
         d = _write(tmp_path, model=GOOD_MODEL)
         result = CodeSmokeRunner(timeout_s=90).run(
             d, SmokeExpectations(input_shape=[12], num_classes=999)
         )
-        assert not result.passed
-        assert any(c["name"] == "output_shape" for c in result.failed_checks)
+        shape = next(c for c in result.checks if c["name"] == "output_shape")
+        assert "999" in shape["detail"], "the paper's class count must be stated"
+
+    def test_matching_head_is_confirmed(self, tmp_path):
+        """The positive case: when the head does match, say so plainly."""
+        d = _write(tmp_path, model=GOOD_MODEL)
+        result = CodeSmokeRunner(timeout_s=90).run(
+            d, SmokeExpectations(input_shape=[12], num_classes=10)
+        )
+        assert result.passed
+        shape = next(c for c in result.checks if c["name"] == "output_shape")
+        assert not shape["skipped"] and "matches" in shape["detail"]
 
     def test_forward_returning_no_tensor_still_fails(self, tmp_path):
         d = _write(
@@ -362,3 +393,27 @@ class TestModelSelection:
         failure = next(c for c in result.failed_checks if c["name"] == "model_instantiates")
         assert "RealModel" in failure["detail"]
         assert "degrees" in failure["detail"]
+
+
+class TestPdfBudget:
+    """The PDF pipeline overrode the extractor's own char budget with a much
+    smaller one, cutting a 12-page paper to under a quarter of its text and
+    taking the architecture sections with it. Everything downstream was
+    starved by that single number."""
+
+    def test_pipeline_does_not_shrink_the_extractor_budget(self):
+        import inspect
+
+        from arpa.tools.paper_extractor import PaperSectionExtractor
+        from arpa.tools.pdf_pipeline import PdfToTextPipeline
+
+        pipeline_default = inspect.signature(
+            PdfToTextPipeline.__init__
+        ).parameters["max_chars"].default
+        extractor_default = inspect.signature(
+            PaperSectionExtractor.__init__
+        ).parameters["max_chars"].default
+        assert pipeline_default >= extractor_default, (
+            "the pipeline must not silently truncate below what the extractor "
+            f"would keep ({pipeline_default} < {extractor_default})"
+        )

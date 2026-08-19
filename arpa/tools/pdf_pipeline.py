@@ -72,11 +72,24 @@ def _read_pdf_text(pdf_path: Path) -> tuple[str, int]:
 class PdfToTextPipeline:
     """Convert a paper PDF into a focused dataset-relevant ``.txt`` file."""
 
+    # 16000 was starving every downstream stage. A 12-page paper yields ~59k
+    # characters of text, and that budget cut it to ~14k -- 23% of the paper --
+    # taking the architecture with it. ResNet's Table 1 (7x7 stem, bottleneck
+    # blocks, the 50/101/152-layer configurations) never reached the extraction
+    # agent at all, so the architecture pass returned three vague components,
+    # and CodeGen filled the gap from the model's own priors: a generic
+    # residual network whose docstring claimed "the paper underspecifies the
+    # architecture" about the paper that specifies it most precisely.
+    #
+    # 32000 matches PaperSectionExtractor's own default and keeps the
+    # architecture sections. It stays well inside the extraction prompt's
+    # budget (ExtractionAgent slices to 32000 before sending), so nothing
+    # downstream has to change.
     def __init__(
         self,
         extractor: PaperSectionExtractor | None = None,
         *,
-        max_chars: int = 16000,
+        max_chars: int = 32000,
     ) -> None:
         self.extractor = extractor or PaperSectionExtractor(max_chars=max_chars)
 

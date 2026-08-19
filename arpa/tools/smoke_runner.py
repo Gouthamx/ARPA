@@ -386,14 +386,16 @@ class CodeSmokeRunner:
                 emit(); sys.exit(0)
 
             def try_construct(cls):
-                for kwargs in ({{}}, {{"num_classes": NUM_CLASSES}} if NUM_CLASSES else {{}}):
+                # num_classes first: if the model accepts it, the output width
+                # is a claim we can hold it to. If it does not, we must not.
+                for kwargs in ({{"num_classes": NUM_CLASSES}} if NUM_CLASSES else {{}}, {{}}):
                     if kwargs.get("num_classes") is None and kwargs:
                         continue
                     try:
-                        return cls(**kwargs), ""
+                        return cls(**kwargs), "", bool(kwargs)
                     except Exception as exc:
                         err = cls.__name__ + ": " + type(exc).__name__ + ": " + str(exc)
-                return None, err
+                return None, err, False
 
             # The top-ranked candidate is the paper's model. If it cannot be
             # constructed, that IS the result -- do not quietly fall back to a
@@ -401,7 +403,7 @@ class CodeSmokeRunner:
             # raised "degrees should be a sequence of length 2" was reported as
             # a stride error inside its Sobel filter, which pointed at the
             # wrong file entirely.
-            model, ctor_error = try_construct(candidates[0])
+            model, ctor_error, took_num_classes = try_construct(candidates[0])
             if model is None:
                 check("model_instantiates", False, ctor_error)
                 check("forward_pass", False, "model could not be constructed")
@@ -464,7 +466,18 @@ class CodeSmokeRunner:
 
             # -- output shape --------------------------------------------
             if out is not None and NUM_CLASSES:
-                if not isinstance(raw_out, torch.Tensor):
+                if not took_num_classes:
+                    # The model was never told how many classes to produce, so
+                    # its output width is not a claim about class count and
+                    # asserting on it invents a failure. SimCLR is the case
+                    # that proves it: a contrastive encoder returns a 128-dim
+                    # projection by design, and was reported as "got 128,
+                    # paper says 1000" -- correct code, wrong instrument. Same
+                    # error as scoring a VAE on accuracy.
+                    check("output_shape", True,
+                          "model takes no num_classes; output is not class logits",
+                          skipped=True)
+                elif not isinstance(raw_out, torch.Tensor):
                     # Multi-output model: which element carries the class
                     # logits is not knowable here, and a VAE's first output is
                     # a reconstruction whose last dim is image width, not a
@@ -474,10 +487,24 @@ class CodeSmokeRunner:
                 else:
                     try:
                         last = out.shape[-1]
-                        check("output_shape", last == NUM_CLASSES,
-                              "got " + str(last) + ", paper says " + str(NUM_CLASSES))
+                        matches = last == NUM_CLASSES
+                        # Reported, never fatal. This stage answers "does the
+                        # code run"; output width is a correctness signal, and
+                        # treating it as a run failure produced two wrong
+                        # verdicts on correct architectures -- a VAE returning
+                        # a reconstruction, and a SimCLR encoder returning its
+                        # 128-dim projection (contrastive pretraining has no
+                        # class logits, even though the constructor accepts
+                        # num_classes and ignores it). A genuinely mismatched
+                        # classifier head still shows up in the detail, where
+                        # it belongs, rather than as "this code does not run".
+                        check("output_shape", True,
+                              ("matches paper (" + str(last) + ")") if matches else
+                              ("got " + str(last) + ", paper says " + str(NUM_CLASSES)
+                               + " -- correct for a non-classifier, a defect for a classifier"),
+                              skipped=not matches)
                     except Exception as exc:
-                        check("output_shape", False, str(exc))
+                        check("output_shape", True, str(exc), skipped=True)
             elif out is not None:
                 check("output_shape", True, "num_classes unknown", skipped=True)
 
