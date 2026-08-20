@@ -118,6 +118,16 @@ For components:
   - parameters: exact parameters from text/tables only.
   - confidence/evidence: provenance for the component.
 
+Keep the component list to at most 12 entries. Describe repeated structure as
+ONE component with a count parameter -- a stage of 4 identical 256-filter
+convolutions is one entry with repeat=4, not four entries -- rather than
+listing each layer separately. When a paper presents
+several configurations of the same network (VGG's A-E, ResNet's 18/34/50/101),
+describe only the one it headlines or evaluates most, and name the others in
+notes. Enumerating every layer of every variant produces an answer too long to
+finish, and the result is worse than a compact one: an unfinished list is
+discarded entirely.
+
 Put codegen-critical gaps in assumptions_needed, especially:
   - model architecture underspecified
   - layer order missing
