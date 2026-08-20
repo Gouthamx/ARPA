@@ -477,3 +477,82 @@ class TestExtractionAccuracy:
             MethodologySpec(architecture=ArchitectureSpec()),
         ):
             ExtractionAgent._drop_dataset_name_from_architecture(spec)  # must not raise
+
+
+class TestProseFieldsAcceptLists:
+    """Provenance fields are declared as prose, but a model quoting two
+    supporting sentences returns a list. `source` was already tolerant
+    (`str | list[str]`); `evidence`, `reason`, `suggested_resolution` and
+    `purpose` were not -- and one `evidence: ['Dense Convolutional Network
+    (DenseNet)']` discarded DenseNet's entire codegen plan, because a
+    ValidationError anywhere degrades the whole pass to an empty placeholder."""
+
+    def test_confidence_field_evidence_accepts_a_list(self):
+        from arpa.core.confidence import ConfidenceField
+
+        assert ConfidenceField(value="x", evidence=["a", "b"]).evidence == "a; b"
+        assert ConfidenceField(value="x", evidence="plain").evidence == "plain"
+        assert ConfidenceField(value="x", evidence=[]).evidence is None
+
+    def test_the_real_densenet_payload(self):
+        from arpa.core.confidence import ConfidenceField
+
+        got = ConfidenceField(value="DenseNet", evidence=["Dense Convolutional Network (DenseNet)"])
+        assert got.evidence == "Dense Convolutional Network (DenseNet)"
+
+    @pytest.mark.parametrize(
+        "cls_name, kwargs, field",
+        [
+            ("CodegenMissingDetail", {"field": "x", "reason": ["r1", "r2"]}, "reason"),
+            ("CodegenMissingDetail", {"field": "x", "reason": "r", "evidence": ["e1", "e2"]}, "evidence"),
+            ("CodegenMissingDetail",
+             {"field": "x", "reason": "r", "suggested_resolution": ["s1", "s2"]},
+             "suggested_resolution"),
+            ("ModelComponentSpec", {"name": "n", "kind": "k", "evidence": ["e1", "e2"]}, "evidence"),
+            ("CodegenFileSpec", {"path": "p", "purpose": ["a", "b"]}, "purpose"),
+            ("ExtractedPreprocessStep", {"name": "n", "evidence": ["e1", "e2"]}, "evidence"),
+        ],
+    )
+    def test_prose_fields_join_lists(self, cls_name, kwargs, field):
+        import arpa.core.state as state
+
+        obj = getattr(state, cls_name)(**kwargs)
+        assert "; " in getattr(obj, field) or getattr(obj, field) is not None
+
+    def test_plain_strings_are_untouched(self):
+        from arpa.core.state import CodegenMissingDetail
+
+        spec = CodegenMissingDetail(field="x", reason="a single reason")
+        assert spec.reason == "a single reason"
+
+    def test_every_prose_field_is_covered(self):
+        """Guards against a new class declaring one of these as a bare str.
+        The defect recurred in eight fields across five classes precisely
+        because it was fixed one failure at a time."""
+        import ast
+        from pathlib import Path
+
+        src = Path("arpa/core/state.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        prose = {"evidence", "reason", "suggested_resolution", "purpose"}
+        offenders = []
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            declares = {
+                ast.unparse(item.target)
+                for item in node.body
+                if isinstance(item, ast.AnnAssign)
+            }
+            if not (declares & prose):
+                continue
+            has_validator = any(
+                isinstance(item, ast.Assign)
+                and any(getattr(t, "id", "") == "_join_prose" for t in item.targets)
+                for item in node.body
+            )
+            if not has_validator:
+                offenders.append(node.name)
+        assert offenders == [], (
+            f"these classes declare prose fields without the joining validator: {offenders}"
+        )

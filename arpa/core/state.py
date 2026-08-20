@@ -15,9 +15,24 @@ from arpa.models.schema_helpers import (
     FlexibleBool,
     FlexibleList,
     _is_null_token,
+    join_if_list,
     parse_stringified_list,
     unwrap_confidence_field,
 )
+
+
+# Prose fields a model may answer with several quotes instead of one. Declared
+# once and attached per class: the same defect turned up in eight fields across
+# five classes, and one `evidence: ['Dense Convolutional Network (DenseNet)']`
+# discarded DenseNet's entire codegen plan, because a ValidationError anywhere
+# degrades the whole pass to an empty placeholder.
+_PROSE_FIELDS = ("evidence", "reason", "suggested_resolution", "purpose")
+
+
+def _join_prose_fields():
+    return field_validator(*_PROSE_FIELDS, mode="before", check_fields=False)(
+        classmethod(lambda cls, v: join_if_list(v))
+    )
 
 
 class DatasetDescription(BaseModel):
@@ -74,6 +89,8 @@ class CodegenMissingDetail(BaseModel):
         The CodeGen agent can then decide to use, question, or ignore the default.
     """
 
+    _join_prose = _join_prose_fields()
+
     field: str
     reason: str
     severity: Literal["critical", "important", "optional"] = "important"
@@ -99,6 +116,8 @@ class PassFailure(BaseModel):
 
 class ExtractedPreprocessStep(BaseModel):
     """A single preprocessing/augmentation step as extracted from paper text."""
+
+    _join_prose = _join_prose_fields()
 
     name: str = Field(description="Transform name, e.g. 'RandomCrop' or 'Normalize'")
     parameters: dict[str, Any] = Field(
@@ -163,6 +182,8 @@ class ExtractedDatasetInfo(BaseModel):
 class PreprocessStep(BaseModel):
     """One preprocessing step with confidence stamp."""
 
+    _join_prose = _join_prose_fields()
+
     name: str
     code_snippet: str
     confidence: ConfidenceLevel
@@ -191,6 +212,8 @@ class DatasetSpec(BaseModel):
 
 class ModelComponentSpec(BaseModel):
     """A model component or layer-level implementation fact."""
+
+    _join_prose = _join_prose_fields()
 
     name: str
     kind: str
@@ -798,6 +821,8 @@ class EvaluationSpec(BaseModel):
 class BenchmarkExperimentSpec(BaseModel):
     """One reported experiment/baseline result from a paper benchmark table."""
 
+    _join_prose = _join_prose_fields()
+
     model_name: str
     parameters: dict[str, Any] = Field(default_factory=dict)
     dataset_metric: float | None = None
@@ -868,6 +893,8 @@ class ImplementationSpec(BaseModel):
 
 class CodegenFileSpec(BaseModel):
     """A file the CodeGen Agent should produce."""
+
+    _join_prose = _join_prose_fields()
 
     path: str
     purpose: str

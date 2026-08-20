@@ -98,6 +98,25 @@ def _split_scalars(text: str) -> Optional[list]:
     return out
 
 
+def join_if_list(v: Any) -> Any:
+    """Join a list of strings into one, for fields declared as prose.
+
+    Models quote several supporting sentences as a list about as readily as
+    one as a string. Every such field is optional provenance -- evidence,
+    reason, purpose -- yet a list in any of them raised a ValidationError,
+    and a ValidationError degrades the entire extraction pass to an empty
+    placeholder. One `evidence: ['Dense Convolutional Network (DenseNet)']`
+    cost DenseNet its whole codegen plan.
+
+    Joined rather than truncated to the first entry: each quote is provenance
+    worth keeping, and these fields are read as prose.
+    """
+    if isinstance(v, (list, tuple)):
+        parts = [str(item).strip() for item in v if item is not None and str(item).strip()]
+        return "; ".join(parts) if parts else None
+    return v
+
+
 def coerce_to_str(v: Any) -> Any:
     """Stringify a scalar that arrived where prose was expected.
 

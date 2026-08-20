@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 T = TypeVar("T")
 
@@ -26,6 +26,26 @@ class ConfidenceField(BaseModel, Generic[T]):
     alternatives: list[T] | None = None
     warning: str | None = None
     replacement_logic: str | None = None
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def join_evidence_lists(cls, v: Any) -> Any:
+        """Accept several supporting quotes, not just one.
+
+        `source` was already declared `str | list[str]`, but `evidence` was
+        `str` alone -- and a model quoting two sentences returns a list. One
+        such field ("evidence: ['Dense Convolutional Network (DenseNet)']")
+        failed validation and, because a ValidationError degrades the whole
+        pass to an empty placeholder, took DenseNet's entire codegen plan with
+        it.
+
+        Joined rather than truncated to the first item: every quote the model
+        offered is provenance worth keeping, and this field is read as prose.
+        """
+        if isinstance(v, (list, tuple)):
+            parts = [str(item).strip() for item in v if item is not None and str(item).strip()]
+            return "; ".join(parts) if parts else None
+        return v
 
     def is_high_uncertainty(self) -> bool:
         conf = self.get_confidence()
