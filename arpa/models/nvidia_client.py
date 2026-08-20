@@ -26,7 +26,13 @@ T = TypeVar("T", bound=BaseModel)
 # Upper bound when growing the token budget after a truncated response. Stops
 # a pathological generation (a repetition loop, say) from escalating without
 # limit across retries.
-MAX_TOKENS_CEILING = 16384
+#
+# Raised 16384 -> 32768 for VGG, whose architecture pass truncated even after
+# reasoning was switched off. The JSON itself is the bulk: the schema wraps
+# every field in a confidence object carrying value, source and evidence, and
+# that paper has five configurations worth of layers to describe. Suppressing
+# the model's narration cut the waste; the remaining length is real output.
+MAX_TOKENS_CEILING = 32768
 
 # Structured extraction previously inherited chat()'s 4096 default, which is
 # comfortable for most passes but not for an architecture pass on a paper with
@@ -43,6 +49,30 @@ MAX_TOKENS_CEILING = 16384
 # paying once beats generating twice. Kept below MAX_TOKENS_CEILING so the
 # doubling retry still has somewhere to go on a genuinely oversized response.
 STRUCTURED_MAX_TOKENS = 12288
+
+# Model families that emit chain-of-thought before their answer. Matched on the
+# name because NVIDIA exposes no capability flag; a false negative just means
+# the old verbose behaviour, which is what we had before.
+_REASONING_MODEL_MARKERS = ("nemotron", "deepseek-r", "qwq", "reasoning")
+
+
+def _is_reasoning_model(model: str | None) -> bool:
+    return any(marker in (model or "").lower() for marker in _REASONING_MODEL_MARKERS)
+
+
+def _prefix_system(messages: list[dict[str, str]], directive: str) -> list[dict[str, str]]:
+    """Put ``directive`` at the very start of the system message.
+
+    Position matters for this family: the switch is read from the head of the
+    system prompt, not found somewhere in the middle of it.
+    """
+    out = [dict(m) for m in messages]
+    if out and out[0].get("role") == "system":
+        if not out[0]["content"].lstrip().lower().startswith(directive.lower()):
+            out[0]["content"] = f"{directive}\n\n{out[0]['content']}"
+        return out
+    out.insert(0, {"role": "system", "content": directive})
+    return out
 
 
 class NvidiaError(RuntimeError):
@@ -154,7 +184,7 @@ class NvidiaClient:
                 "Do not include any text before or after the JSON. "
                 "Do not use markdown fences. Return raw JSON directly."
             )
-            
+
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] += json_instruction
             else:
@@ -162,8 +192,24 @@ class NvidiaClient:
                     "role": "system",
                     "content": "You are an assistant that returns valid JSON." + json_instruction
                 })
-            
-            payload["messages"] = messages
+
+            # Nemotron reasoning models think out loud before answering, and
+            # that prose comes out of the same token budget as the JSON. VGG's
+            # architecture pass spent 16384 tokens narrating ("We are given a
+            # paper excerpt. We need to extract...") and was cut off before it
+            # finished the object -- reported as truncation, fixed by neither
+            # of the two retries, and the paper ended up with zero extracted
+            # components and a generic CNN.
+            #
+            # "detailed thinking off" is NVIDIA's documented switch for the
+            # Nemotron family and it is decisive here: the same request went
+            # from >16384 tokens and truncated to 405 tokens of clean JSON.
+            # Asking for JSON was never enough on its own -- the model obliges
+            # eventually, just not before running out of room.
+            if _is_reasoning_model(payload["model"]):
+                payload["messages"] = _prefix_system(messages, "detailed thinking off")
+            else:
+                payload["messages"] = messages
         
         url = f"{self.base_url}/v1/chat/completions"
         headers = {
