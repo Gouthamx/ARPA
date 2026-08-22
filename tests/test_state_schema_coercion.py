@@ -577,3 +577,38 @@ class TestDatasetAliases:
             None,
         )
         assert canonical == "imagenet", f"{spelling} did not resolve"
+
+
+class TestArchitectureTablesSurviveTheProseFilter:
+    """The section filter drops tables on purpose -- right when this module only
+    fed the dataset agent, wrong once architecture matters. VGG's Table 1 was
+    discarded as "low letter ratio (0.47)": its header row is "A A-LRN B C D E"
+    and its body is conv3-64 / FC-4096 / maxpool. The pass that should describe
+    the network never saw a layer and returned zero components while reporting
+    success."""
+
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ("conv3-64 conv3-64 maxpool FC-4096 soft-max", True),
+            ("7x7, 64, stride 2   3x3 max pool   1x1, 256", True),
+            ("conv1-96 conv5-256 avgpool", True),
+            # Prose must not be mistaken for a specification.
+            ("We train the network with a batch size of 256 and momentum 0.9.", False),
+            ("The kernel is applied across the whole image.", False),
+            ("[12] A. Krizhevsky and G. Hinton. Learning multiple layers.", False),
+            ("", False),
+        ],
+    )
+    def test_detects_layer_specifications_only(self, body, expected):
+        from arpa.tools.paper_extractor import _looks_like_architecture_table
+
+        assert _looks_like_architecture_table(body) is expected
+
+    def test_a_single_marker_is_not_enough(self):
+        """One passing mention of a stride or a 3x3 kernel is ordinary prose."""
+        from arpa.tools.paper_extractor import _looks_like_architecture_table
+
+        assert not _looks_like_architecture_table(
+            "Each filter uses a stride chosen to preserve resolution."
+        )

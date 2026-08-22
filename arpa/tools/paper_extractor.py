@@ -195,6 +195,37 @@ def _is_terminal_section(title: str) -> bool:
     return any(t == term or t.startswith(term) for term in TERMINAL_SECTION_TITLES)
 
 
+# Layer specifications as papers write them in architecture tables:
+# "conv3-64", "3x3 conv, 64", "FC-4096", "maxpool", "1x1, 256".
+_ARCH_TABLE_MARKERS = (
+    re.compile(r"\bconv\d", re.I),                  # conv3-64, conv1
+    re.compile(r"\bfc[-_ ]?\d{3,}", re.I),          # FC-4096
+    re.compile(r"\b\d+\s*[x×]\s*\d+\b"),            # 3x3, 7×7
+    re.compile(r"\b(max|avg|average|global)[-_ ]?pool", re.I),
+    re.compile(r"\bsoft[-]?max\b", re.I),
+    re.compile(r"\b(stride|padding|kernel|filters?)\b", re.I),
+)
+_MIN_ARCH_MARKERS = 2
+
+
+def _looks_like_architecture_table(body: str) -> bool:
+    """Does this block specify layers, even though it does not read as prose?
+
+    The prose filter exists to drop tables, and that was right when this module
+    only fed the dataset agent. It is wrong now: an architecture table is the
+    single most valuable block in the paper. VGG's Table 1 was discarded as
+    "low letter ratio (0.47)" -- the header row is "A A-LRN B C D E" and the
+    body is conv3-64 / FC-4096 / maxpool -- so the pass that should describe
+    the network never saw a single layer, and returned zero components while
+    reporting success.
+
+    Two distinct markers are required so ordinary prose mentioning a stride or
+    a 3x3 kernel in passing is not mistaken for a specification.
+    """
+    hits = sum(1 for pattern in _ARCH_TABLE_MARKERS if pattern.search(body))
+    return hits >= _MIN_ARCH_MARKERS
+
+
 def _prose_quality(body: str) -> tuple[bool, str]:
     """Decide structurally whether ``body`` is readable prose (vs math/table/noise).
 
@@ -272,6 +303,17 @@ class PaperSectionExtractor:
                 continue
             is_prose, reason = _prose_quality(block.body)
             if not is_prose:
+                # A layer specification is worth keeping precisely because it
+                # is not prose. Checked only for blocks the prose test already
+                # rejected, so nothing that used to survive is affected.
+                if _looks_like_architecture_table(block.body):
+                    logger.debug(
+                        "  kept '{}' despite {}: reads as an architecture table",
+                        block.title or f"#{block.order}",
+                        reason,
+                    )
+                    kept.append(block)
+                    continue
                 report.dropped.append((block.title or f"#{block.order}", reason))
                 continue
             kept.append(block)
