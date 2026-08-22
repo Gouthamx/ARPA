@@ -556,3 +556,24 @@ class TestProseFieldsAcceptLists:
         assert offenders == [], (
             f"these classes declare prose fields without the joining validator: {offenders}"
         )
+
+
+class TestDatasetAliases:
+    """ILSVRC ran annually on essentially the same 1000-class data, and papers
+    cite the year they competed in. Only the 2012 spelling was listed, so VGG
+    (ILSVRC-2014) failed dataset resolution after extraction had succeeded."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["ILSVRC2012", "ILSVRC-2014", "ilsvrc 2014", "ILSVRC2015", "ILSVRC",
+         "ImageNet", "imagenet-1k"],
+    )
+    def test_ilsvrc_years_resolve_to_imagenet(self, spelling):
+        from arpa.tools.dataset_tools import DATASET_ALIASES
+
+        name = spelling.lower().strip()
+        canonical = next(
+            (c for c, aliases in DATASET_ALIASES.items() if name == c or name in aliases),
+            None,
+        )
+        assert canonical == "imagenet", f"{spelling} did not resolve"

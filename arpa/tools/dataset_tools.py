@@ -81,7 +81,18 @@ DATASET_ALIASES: dict[str, list[str]] = {
     "fashion_mnist": ["fashion-mnist", "fashionmnist", "fashion mnist"],
     "kmnist": ["kuzushiji-mnist", "kuzushiji mnist"],
     "emnist": ["extended-mnist", "extended mnist"],
-    "imagenet": ["imagenet-1k", "imagenet1k", "ilsvrc2012", "ilsvrc-2012", "ilsvrc 2012", "imagenet 2012"],
+    # ILSVRC ran annually on essentially the same 1000-class data, and papers
+    # cite whichever year they competed in -- VGG says ILSVRC-2014, ResNet says
+    # ILSVRC-2015. Only the 2012 spelling was listed, so VGG's dataset stage
+    # failed with "could not resolve 'ILSVRC2014' in any registry" after its
+    # extraction had succeeded.
+    "imagenet": [
+        "imagenet-1k", "imagenet1k", "imagenet 2012", "ilsvrc",
+        "ilsvrc2012", "ilsvrc-2012", "ilsvrc 2012",
+        "ilsvrc2013", "ilsvrc-2013", "ilsvrc 2013",
+        "ilsvrc2014", "ilsvrc-2014", "ilsvrc 2014",
+        "ilsvrc2015", "ilsvrc-2015", "ilsvrc 2015",
+    ],
     "svhn": ["street view house numbers", "svhn_cropped"],
     "stl10": ["stl-10", "stl 10"],
     "food101": ["food-101", "food 101"],
